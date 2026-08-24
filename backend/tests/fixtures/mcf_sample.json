@@ -1,0 +1,54 @@
+{
+  "results": [
+    {
+      "uuid": "abc-123",
+      "title": "Graduate Software Engineer",
+      "description": "Join our engineering team as a fresh graduate building backend services.",
+      "salary": {"minimum": 4500, "maximum": 6000, "type": {"id": 4, "salaryType": "Monthly"}},
+      "postedCompany": {"name": "Acme Tech Pte Ltd"},
+      "categories": [{"id": 1, "category": "Information Technology"}],
+      "employmentTypes": [{"id": 8, "employmentType": "Full Time"}],
+      "positionLevels": [{"id": 3, "position": "Fresh/entry level"}],
+      "address": {"districts": [{"region": "Central"}]},
+      "metadata": {
+        "jobPostId": "MCF-2024-0001",
+        "jobDetailsUrl": "https://www.mycareersfuture.gov.sg/job/MCF-2024-0001",
+        "newPostingDate": "2024-08-01",
+        "expiryDate": "2024-09-01"
+      }
+    },
+    {
+      "uuid": "def-456",
+      "title": "Investment Banking Summer Internship",
+      "description": "10-week internship for penultimate-year students in our IBD division.",
+      "salary": {"minimum": 1500, "maximum": 2000, "type": {"id": 4, "salaryType": "Monthly"}},
+      "postedCompany": {"name": "Global Bank SG"},
+      "categories": [{"id": 2, "category": "Banking and Finance"}],
+      "employmentTypes": [{"id": 9, "employmentType": "Internship/Attachment"}],
+      "positionLevels": [{"id": 1, "position": "Fresh/entry level"}],
+      "address": {"districts": [{"region": "Downtown Core"}]},
+      "metadata": {
+        "jobPostId": "MCF-2024-0002",
+        "newPostingDate": "2024-08-05",
+        "expiryDate": "2024-10-05"
+      }
+    },
+    {
+      "uuid": "ghi-789",
+      "title": "Management Associate Programme 2025",
+      "description": "Two-year rotational graduate programme across our retail banking units.",
+      "salary": {"minimum": 5000, "maximum": 5500, "type": {"id": 4, "salaryType": "Monthly"}},
+      "postedCompany": {"name": "Global Bank SG"},
+      "categories": [{"id": 2, "category": "Banking and Finance"}],
+      "employmentTypes": [{"id": 8, "employmentType": "Full Time"}],
+      "positionLevels": [{"id": 3, "position": "Junior Executive"}],
+      "address": {"districts": [{"region": "Downtown Core"}]},
+      "metadata": {
+        "jobPostId": "MCF-2024-0003",
+        "newPostingDate": "2024-08-10",
+        "expiryDate": "2024-11-10"
+      }
+    }
+  ],
+  "total": 3
+}
