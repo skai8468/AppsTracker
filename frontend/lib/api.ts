@@ -6,8 +6,11 @@ import type {
   Job,
 } from "./types";
 
-const BASE =
-  process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8100";
+// Undefined (dev, no env set) -> localhost backend. Explicitly empty (production build,
+// see .env.production) -> "" so requests are same-origin relative, since the backend
+// serves this bundle. A real URL is used verbatim.
+const RAW = process.env.NEXT_PUBLIC_API_BASE;
+const BASE = (RAW === undefined ? "http://localhost:8100" : RAW).replace(/\/$/, "");
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

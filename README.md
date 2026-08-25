@@ -21,13 +21,15 @@ recruiter replies, and pings a Telegram bot.
 
 ## Architecture
 
-Single always-on **FastAPI** service (REST API + Telegram webhook + APScheduler jobs for
-scraping and Gmail polling) backed by **Postgres** (SQLite locally), plus a **Next.js**
-dashboard. See `../.claude/plans/` or the sections below.
+A **single always-on FastAPI process** does everything: serves the REST API, serves the
+statically-built **Next.js** dashboard from the same origin, runs the APScheduler scrape +
+Gmail-poll jobs, and runs a **Telegram long-poll** bot (no webhook, so no public endpoint).
+The database is **SQLite** on disk — plenty for one user. Designed to run on a small
+always-on box (e.g. a GCP e2-micro); see [DEPLOY.md](DEPLOY.md).
 
 ```
-backend/   FastAPI + scrapers + Gmail poller + Telegram bot + APScheduler
-frontend/  Next.js dashboard (Jobs / Applications / Inbox / Settings)
+backend/   FastAPI (API + serves the dashboard) + scrapers + Gmail poller + Telegram bot + APScheduler
+frontend/  Next.js dashboard (Jobs / Applications / Inbox / Settings) — static-exported to frontend/out
 ```
 
 ## Local development
@@ -56,15 +58,16 @@ npm run dev                          # http://localhost:3000
    verification needed for a single user).
 2. Download the client secrets to `backend/credentials.json`.
 3. Run `python -m app.gmail.oauth` once — grants `gmail.readonly` and writes `token.json`.
-4. In prod, put `token.json`'s contents into a secret and materialise it on boot.
+4. On the VM, copy that `token.json` next to the app (the disk persists), or paste its
+   contents into `GMAIL_TOKEN_JSON` and the app materialises it on boot.
 
 Set `GMAIL_DRY_RUN=true` to log matches without changing state while testing.
 
 ## Connecting Telegram
 
-1. Create a bot via [@BotFather](https://t.me/BotFather); set `TELEGRAM_BOT_TOKEN` and a
-   random `TELEGRAM_WEBHOOK_SECRET`.
-2. After deploy, register the webhook: `python -m app.telegram.webhook`.
+1. Create a bot via [@BotFather](https://t.me/BotFather); set `TELEGRAM_BOT_TOKEN`.
+2. Start the app — it long-polls Telegram (`getUpdates`), so there's no webhook to
+   register and no public endpoint to expose.
 3. Message your bot `/start` to link your chat. Commands: `/status`, `/jobs`.
 
 ## Adding company scrapers
@@ -74,12 +77,13 @@ Drop a module in `backend/app/scrapers/companies/` and decorate an
 line via `fetch_greenhouse("<board-token>", company_name=...)`. Failures are isolated, so a
 broken site never aborts a scrape pass.
 
-## Deployment (Render)
+## Deployment (single VM)
 
-`render.yaml` is a blueprint for two always-on web services (backend + frontend) plus
-managed Postgres. After the first deploy, fill the `sync:false` env vars
-(`PUBLIC_BASE_URL`, `CORS_ORIGINS`, `NEXT_PUBLIC_API_BASE`, Telegram secrets), then run the
-Telegram `setWebhook` step. Railway works the same way with the backend `Dockerfile`.
+Runs as one always-on process on a small VM (built for a **GCP e2-micro / Debian**). The
+backend serves both the API and the static dashboard; the dashboard is reached over an SSH
+tunnel, so nothing is publicly exposed. `deploy/jobtrack.service` (systemd) and
+`deploy/deploy.sh` (pull → build → restart) automate it. Full walkthrough in
+[DEPLOY.md](DEPLOY.md).
 
 ## Notes & limitations
 

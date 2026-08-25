@@ -18,10 +18,25 @@ log = logging.getLogger(__name__)
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
+def _ensure_token_file() -> None:
+    """In prod the token isn't on disk (ephemeral) — seed it from the secret env var.
+
+    ``GMAIL_TOKEN_JSON`` holds the authorized_user JSON (token, refresh_token, client_id,
+    client_secret, ...), which is self-sufficient for silent refresh. We only write it
+    when the file is missing so a locally-refreshed token is never clobbered.
+    """
+    token_path = settings.gmail_token_path
+    if token_path.exists() or not settings.gmail_token_json.strip():
+        return
+    token_path.write_text(settings.gmail_token_json, encoding="utf-8")
+    log.info("Materialised Gmail token from GMAIL_TOKEN_JSON")
+
+
 def _load_credentials():
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
 
+    _ensure_token_file()
     token_path = settings.gmail_token_path
     if not token_path.exists():
         return None

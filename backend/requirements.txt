@@ -12,8 +12,10 @@ google-api-python-client==2.156.0
 google-auth==2.37.0
 google-auth-oauthlib==1.2.1
 
-# Postgres driver (prod); SQLite works out of the box for local dev
-psycopg[binary]==3.2.3
+# Postgres driver — only needed if you set DATABASE_URL to a Postgres URL. The default
+# deploy uses SQLite (stdlib), so this stays commented to keep the install lean on a
+# 1 GB VM. Uncomment if you switch to Postgres.
+# psycopg[binary]==3.2.3
 
 # Tests
 pytest==8.3.4

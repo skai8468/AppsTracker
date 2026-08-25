@@ -26,8 +26,10 @@ class Settings(BaseSettings):
     database_url: str = ""
 
     # --- App ---
-    public_base_url: str = "http://localhost:8100"
     cors_origins: str = "http://localhost:3000"
+    # Path to the built Next.js static export (frontend/out). When present it's served at
+    # / by this app, so the whole thing runs as a single process. Empty => auto-detect.
+    frontend_dist: str = ""
 
     # --- Scheduler ---
     enable_scheduler: bool = True
@@ -39,10 +41,12 @@ class Settings(BaseSettings):
     gmail_credentials_file: str = "credentials.json"
     gmail_token_file: str = "token.json"
     gmail_dry_run: bool = False
+    # Prod: the authorized_user token.json contents, injected as a secret. On boot the
+    # app materialises this to gmail_token_file, since the container disk is ephemeral.
+    gmail_token_json: str = ""
 
-    # --- Telegram ---
+    # --- Telegram (long-polling; no webhook / public endpoint needed) ---
     telegram_bot_token: str = ""
-    telegram_webhook_secret: str = ""
 
     @property
     def resolved_database_url(self) -> str:
@@ -60,6 +64,12 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def frontend_dist_path(self) -> Path:
+        if self.frontend_dist:
+            return Path(self.frontend_dist)
+        return BACKEND_DIR.parent / "frontend" / "out"
 
     @property
     def gmail_credentials_path(self) -> Path:

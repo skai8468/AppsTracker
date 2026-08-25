@@ -1,0 +1,145 @@
+# Deploying JobTrack SG on a GCP e2-micro (Debian)
+
+The whole app runs as **one always-on process** on a single small VM:
+
+- FastAPI serves the **REST API** *and* the **static dashboard** from one port (`8100`).
+- APScheduler runs the **scrapers + Gmail poller** in-process.
+- A **Telegram long-poll** thread pulls updates (no webhook, so no public HTTPS needed).
+- **SQLite** on the VM disk is the database (single user — no Postgres to run).
+
+Access is via an **SSH tunnel**, so nothing is exposed to the internet: no open ports, no
+TLS, no domain. The bot reaches out to Telegram; you reach the dashboard through SSH.
+
+```
+you ──ssh -L 8100:localhost:8100──▶ VM :8100 ──▶ FastAPI ─┬─ /            (dashboard)
+                                                          ├─ /jobs, ...   (API)
+                                                          ├─ APScheduler  (scrape + Gmail)
+                                                          └─ Telegram long-poll
+```
+
+Sizing note: `next build` is memory-hungry; a 1 GB e2-micro needs **swap** (step 3) or it
+will OOM. Everything else fits comfortably.
+
+---
+
+## 0. Local prep (once)
+
+You need two things ready before touching the VM:
+
+**a. Telegram bot token** — message **@BotFather** → `/newbot` → copy the token. That's the
+only Telegram secret now (long-polling needs no webhook secret).
+
+**b. Gmail read-only OAuth token** — the browser OAuth step must run on a machine with a
+browser, i.e. your laptop, not the headless VM:
+1. Google Cloud Console → new project → enable the **Gmail API**.
+2. **Credentials → Create → OAuth client ID → Desktop app** → download JSON to
+   `backend/credentials.json`. Add your Google account as a **Test user** on the consent
+   screen (staying in "Testing" mode is fine — you're the only user).
+3. Run the one-time flow locally:
+   ```bash
+   cd backend
+   ./.venv/Scripts/python.exe -m app.gmail.oauth   # Windows; use ./.venv/bin/python on *nix
+   ```
+   This writes `backend/token.json`. You'll copy that file to the VM in step 5.
+
+---
+
+## 1. Create the VM
+GCP Console → Compute Engine → **Create instance**:
+- Machine type **e2-micro**, region a free-tier one (e.g. `us-central1`) if you want the
+  always-free allowance.
+- Boot disk **Debian 12 (bookworm)**, 10–30 GB standard disk.
+- Allow no special firewall (we don't open any ports). SSH in via the Console or `gcloud`.
+
+## 2. Base packages
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip git curl
+# Node 20 (for `next build`)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+## 3. Add swap (important on 1 GB)
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+## 4. Get the code + a service user
+```bash
+sudo useradd -r -m -d /opt/jobtrack-sg -s /usr/sbin/nologin jobtrack || true
+sudo git clone https://github.com/<you>/jobtrack-sg.git /opt/jobtrack-sg
+sudo chown -R jobtrack:jobtrack /opt/jobtrack-sg
+```
+
+## 5. Configure secrets + copy the Gmail token
+```bash
+sudo -u jobtrack cp /opt/jobtrack-sg/backend/.env.example /opt/jobtrack-sg/backend/.env
+sudo -u jobtrack nano /opt/jobtrack-sg/backend/.env      # set TELEGRAM_BOT_TOKEN
+```
+From your **laptop**, copy the token you generated in step 0b:
+```bash
+scp backend/token.json <you>@<vm>:/tmp/token.json
+# on the VM:
+sudo mv /tmp/token.json /opt/jobtrack-sg/backend/token.json
+sudo chown jobtrack:jobtrack /opt/jobtrack-sg/backend/token.json
+```
+(SQLite needs no config — it's the default. Leave `DATABASE_URL` empty.)
+
+## 6. First build + install
+```bash
+cd /opt/jobtrack-sg
+sudo -u jobtrack ./deploy/deploy.sh    # venv + pip, npm build -> frontend/out
+```
+`deploy.sh` also restarts the service, which doesn't exist yet on the first run — that
+last step will warn; ignore it and continue to step 7.
+
+## 7. Install + start the service
+```bash
+sudo cp /opt/jobtrack-sg/deploy/jobtrack.service /etc/systemd/system/jobtrack.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now jobtrack
+journalctl -u jobtrack -f      # should show "backend ready" + "Telegram long-poll started"
+```
+
+## 8. Connect Telegram
+Message your bot **`/start`** — it captures your chat_id (stored in SQLite, survives
+restarts). Try `/status` and `/jobs`. Notifications fire on (1) an application confirmed,
+(2) a tracked company emailing you.
+
+## 9. Open the dashboard (SSH tunnel)
+From your laptop:
+```bash
+ssh -L 8100:localhost:8100 <you>@<vm>
+```
+Then open <http://localhost:8100> in your browser. The dashboard and API both come through
+the tunnel; nothing is exposed publicly.
+
+---
+
+## Updating later
+```bash
+ssh <you>@<vm>
+sudo -u jobtrack /opt/jobtrack-sg/deploy/deploy.sh   # pull, rebuild, restart
+```
+If `next build` ever OOMs despite swap, build the frontend on your laptop
+(`NEXT_PUBLIC_API_BASE= npm run build`) and `rsync frontend/out/` to
+`/opt/jobtrack-sg/frontend/out/` instead — the VM then needs only Python.
+
+## Notes / gotchas
+- **Single worker only.** The systemd unit runs `uvicorn --workers 1` on purpose: the
+  scheduler and Telegram poller are in-process singletons. More workers = double scrapes
+  and Telegram `getUpdates` conflicts.
+- **Backups.** The database is one file: `backend/jobtrack.sqlite`. `cp` it (or
+  `sqlite3 .backup`) on a cron for peace of mind.
+- **Gmail token refresh.** `token.json` carries a long-lived refresh token; the app
+  refreshes the short access token itself. If Google revokes it (password change, or the
+  Testing-mode app idle > 6 months), re-run step 0b and re-copy the file.
+- **First Gmail poll** just records the current mailbox state (no backfill); confirmations
+  that arrive *after* that auto-flip the matching application to *confirmed*. Set
+  `GMAIL_DRY_RUN=true` for a safe first run that only logs matches.
+- **No public exposure.** If you ever want the dashboard reachable without a tunnel, put
+  Caddy in front for automatic TLS — but that needs a domain and an open port, which the
+  SSH-tunnel setup deliberately avoids.

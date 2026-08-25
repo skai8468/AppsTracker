@@ -1,6 +1,6 @@
 """Outbound Telegram messaging (raw Bot API via httpx — no heavy bot framework).
 
-The user's chat_id is captured when they message the bot ``/start`` (see webhook.py) and
+The user's chat_id is captured when they message the bot ``/start`` (see bot.py) and
 stored in the key/value settings table. ``send_notification`` is the single entry point
 used by the Gmail poller for the two triggers the user asked for:
   1. application confirmed
@@ -55,5 +55,5 @@ def send_message(text: str, chat_id: Optional[str] = None,
 
 def send_notification(text: str) -> bool:
     """Used by the poller. Confirmation messages go plain; company emails could later
-    carry inline classify buttons (handled in webhook.py)."""
+    carry inline classify buttons (handled in bot.py)."""
     return send_message(text)

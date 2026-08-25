@@ -1,0 +1,25 @@
+# systemd unit for JobTrack SG — one always-on process (API + dashboard + scheduler +
+# Telegram long-poll bot). Install:
+#   sudo cp deploy/jobtrack.service /etc/systemd/system/jobtrack.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now jobtrack
+# Logs: journalctl -u jobtrack -f
+[Unit]
+Description=JobTrack SG (API + dashboard + scheduler + Telegram bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jobtrack
+Group=jobtrack
+WorkingDirectory=/opt/jobtrack-sg/backend
+# Bind to localhost only — reach the dashboard via an SSH tunnel, not a public port.
+# --workers 1 is REQUIRED: the scheduler and Telegram poller are in-process singletons;
+# extra workers would duplicate them (double scrapes, getUpdates conflicts).
+ExecStart=/opt/jobtrack-sg/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8100 --workers 1
+Restart=always
+RestartSec=5
+# Secrets/config are read from backend/.env by pydantic-settings.
+
+[Install]
+WantedBy=multi-user.target
