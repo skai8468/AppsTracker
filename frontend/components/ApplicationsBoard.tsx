@@ -21,6 +21,7 @@ const EMPTY_FORM = {
   url: "",
   title: "",
   company: "",
+  domains: "",
   sector: "other" as Sector,
 };
 
@@ -110,6 +111,7 @@ export default function ApplicationsBoard() {
         url: form.url.trim(),
         title: form.title.trim(),
         company: form.company.trim(),
+        email_domains: form.domains.trim(),
         sector: form.sector,
         status: "interested",
       });
@@ -273,6 +275,21 @@ export default function ApplicationsBoard() {
                 {autofilled.company && <span className="auto-tag">✓ Auto</span>}
               </div>
             </div>
+
+            <div className="field-group">
+              <div className="field">
+                <span className="field-label">Domain</span>
+                <input
+                  placeholder="company.com (optional)"
+                  value={form.domains}
+                  onChange={(e) => setForm((f) => ({ ...f, domains: e.target.value }))}
+                />
+              </div>
+            </div>
+            <p className="sheet-sub" style={{ marginTop: -10 }}>
+              So Gmail can auto-detect the confirmation email. You can add or edit this
+              later in Settings.
+            </p>
 
             <div className="group-label">Sector</div>
             <div className="segmented" style={{ margin: "0 0 20px" }}>

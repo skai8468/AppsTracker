@@ -90,7 +90,7 @@ def create_application(body: CreateApplicationIn, session: Session = Depends(get
     if dupe:
         raise HTTPException(409, "already tracking this link")
 
-    company = _get_or_create_company(session, body.company, body.sector)
+    company = _get_or_create_company(session, body.company, body.sector, body.email_domains)
     job = Job(
         source="manual",
         source_job_id=uuid.uuid4().hex,
@@ -117,15 +117,23 @@ def create_application(body: CreateApplicationIn, session: Session = Depends(get
 
 
 def _get_or_create_company(
-    session: Session, name: str, sector
+    session: Session, name: str, sector, email_domains: Optional[str] = None
 ) -> Optional[Company]:
     name = (name or "").strip()
     if not name:
         return None
+    domains = (email_domains or "").strip()
     slug = slugify(name)
     company = session.exec(select(Company).where(Company.slug == slug)).first()
     if company is None:
-        company = Company(name=name, slug=slug, sector=sector)
+        company = Company(name=name, slug=slug, sector=sector, email_domains=domains)
+        session.add(company)
+        session.commit()
+        session.refresh(company)
+    elif domains and not company.email_domains:
+        # Backfill: an earlier job at this company left domains unset — this add supplies
+        # them, so Gmail matching starts working without a separate trip to Settings.
+        company.email_domains = domains
         session.add(company)
         session.commit()
         session.refresh(company)

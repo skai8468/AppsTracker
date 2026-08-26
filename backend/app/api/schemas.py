@@ -38,6 +38,9 @@ class CreateApplicationIn(BaseModel):
     url: str
     title: str
     company: str
+    # Comma-separated sender domain(s), e.g. "stripe.com". Powers Gmail confirmation
+    # matching for this company; optional, can also be set later in Settings.
+    email_domains: Optional[str] = None
     sector: Sector = Sector.other
     status: AppStatus = AppStatus.interested  # "Saved" by default; flip to applied later
     notes: Optional[str] = None

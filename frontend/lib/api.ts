@@ -33,6 +33,7 @@ export interface NewApplication {
   url: string;
   title: string;
   company: string;
+  email_domains?: string;
   sector?: Sector;
   status?: AppStatus;
   notes?: string;
