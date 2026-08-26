@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
 # Pull latest, rebuild, and restart JobTrack SG. Idempotent — safe to re-run.
-# Usage (on the VM):  cd /opt/jobtrack-sg && ./deploy/deploy.sh
+# Run on the VM as root:   sudo /opt/jobtrack-sg/deploy/deploy.sh
+# Builds run as the unprivileged `jobtrack` user (so file ownership stays correct);
+# the service restart runs as root.
 set -euo pipefail
 
-APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$APP_DIR"
+APP_DIR=/opt/jobtrack-sg
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run with sudo: sudo $APP_DIR/deploy/deploy.sh" >&2
+  exit 1
+fi
+
+as_app() { sudo -u jobtrack bash -lc "$1"; }
 
 echo "==> git pull"
-git pull --ff-only
+as_app "git -C $APP_DIR pull --ff-only"
 
 echo "==> backend deps"
-cd backend
-[ -d .venv ] || python3 -m venv .venv
-./.venv/bin/pip install --upgrade pip -q
-./.venv/bin/pip install -r requirements.txt -q
+as_app "cd $APP_DIR/backend && { [ -d .venv ] || python3 -m venv .venv; } && ./.venv/bin/pip install --upgrade pip -q && ./.venv/bin/pip install -q -r requirements.txt"
 
 echo "==> frontend static build (-> frontend/out)"
-cd ../frontend
-npm ci
-# Cap Node heap so `next build` doesn't OOM on a 1 GB e2-micro (needs swap too — see
-# DEPLOY.md). Empty API base => same-origin relative calls (served by the backend).
-NODE_OPTIONS="--max-old-space-size=512" NEXT_PUBLIC_API_BASE="" npm run build
+# Cap Node heap so `next build` doesn't OOM on a 1 GB e2-micro (swap also required —
+# see DEPLOY.md). Empty API base => same-origin relative calls (served by the backend).
+as_app "cd $APP_DIR/frontend && npm ci && NODE_OPTIONS='--max-old-space-size=512' NEXT_PUBLIC_API_BASE='' npm run build"
 
 echo "==> restart service"
-cd "$APP_DIR"
-sudo systemctl restart jobtrack
+systemctl restart jobtrack
 
 echo "==> done. Logs: journalctl -u jobtrack -f"

@@ -70,7 +70,7 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ## 4. Get the code + a service user
 ```bash
 sudo useradd -r -m -d /opt/jobtrack-sg -s /usr/sbin/nologin jobtrack || true
-sudo git clone https://github.com/<you>/jobtrack-sg.git /opt/jobtrack-sg
+sudo git clone https://github.com/skai8468/jobtrack-sg.git /opt/jobtrack-sg
 sudo chown -R jobtrack:jobtrack /opt/jobtrack-sg
 ```
 
@@ -88,20 +88,17 @@ sudo chown jobtrack:jobtrack /opt/jobtrack-sg/backend/token.json
 ```
 (SQLite needs no config — it's the default. Leave `DATABASE_URL` empty.)
 
-## 6. First build + install
-```bash
-cd /opt/jobtrack-sg
-sudo -u jobtrack ./deploy/deploy.sh    # venv + pip, npm build -> frontend/out
-```
-`deploy.sh` also restarts the service, which doesn't exist yet on the first run — that
-last step will warn; ignore it and continue to step 7.
-
-## 7. Install + start the service
+## 6. Install the service unit (before the first build)
 ```bash
 sudo cp /opt/jobtrack-sg/deploy/jobtrack.service /etc/systemd/system/jobtrack.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now jobtrack
-journalctl -u jobtrack -f      # should show "backend ready" + "Telegram long-poll started"
+sudo systemctl enable jobtrack        # enable, don't start yet — nothing is built
+```
+
+## 7. First build + start
+```bash
+sudo /opt/jobtrack-sg/deploy/deploy.sh   # builds venv + frontend, then starts the service
+journalctl -u jobtrack -f                # expect "backend ready" + "Telegram long-poll started"
 ```
 
 ## 8. Connect Telegram
@@ -122,7 +119,7 @@ the tunnel; nothing is exposed publicly.
 ## Updating later
 ```bash
 ssh <you>@<vm>
-sudo -u jobtrack /opt/jobtrack-sg/deploy/deploy.sh   # pull, rebuild, restart
+sudo /opt/jobtrack-sg/deploy/deploy.sh   # pull, rebuild, restart
 ```
 If `next build` ever OOMs despite swap, build the frontend on your laptop
 (`NEXT_PUBLIC_API_BASE= npm run build`) and `rsync frontend/out/` to
