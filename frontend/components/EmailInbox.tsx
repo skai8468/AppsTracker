@@ -4,12 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { AppStatus, EmailEvent } from "@/lib/types";
 
-const STAGES: AppStatus[] = [
-  "confirmed",
-  "interviewing",
-  "offer",
-  "rejected",
-];
+const STAGES: AppStatus[] = ["confirmed", "interviewing", "offer", "rejected"];
 const STAGE_LABEL: Record<string, string> = {
   confirmed: "Confirmed",
   interviewing: "Interview",
@@ -29,7 +24,6 @@ export default function EmailInbox() {
       setLoading(false);
     }
   }
-
   useEffect(() => {
     load();
   }, []);
@@ -40,51 +34,62 @@ export default function EmailInbox() {
   }
 
   return (
-    <div>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">Inbox</h1>
-          <p className="page-sub">
-            Emails from tracked companies. Tap a stage to update the application.
-          </p>
+    <>
+      <header className="nav">
+        <div className="nav-bar">
+          <div />
         </div>
-      </div>
+        <h1 className="large-title">Inbox</h1>
+        <p className="nav-sub">
+          Emails from tracked companies · tap a stage to update the application
+        </p>
+      </header>
 
-      {loading ? (
-        <div className="empty">Loading…</div>
-      ) : events.length === 0 ? (
-        <div className="empty">
-          No company emails detected yet. Connect Gmail in Settings, then this fills
-          up as recruiters reply.
-        </div>
-      ) : (
-        events.map((ev) => (
-          <div className={`list-row ${ev.is_read ? "" : "unread"}`} key={ev.id}>
-            <div className="subj">{ev.subject || "(no subject)"}</div>
-            <div className="from">{ev.from_addr}</div>
-            {ev.snippet && <div className="snip">{ev.snippet}</div>}
-            {ev.classified_stage ? (
-              <div className="classify-row">
-                <span className="badge status">
-                  Classified: {ev.classified_stage}
-                </span>
-              </div>
-            ) : (
-              <div className="classify-row">
-                {STAGES.map((s) => (
-                  <button
-                    key={s}
-                    className="btn sm ghost"
-                    onClick={() => classify(ev, s)}
-                  >
-                    {STAGE_LABEL[s]}
-                  </button>
-                ))}
-              </div>
-            )}
+      <div className="content">
+        {loading ? (
+          <div className="loading">Loading…</div>
+        ) : events.length === 0 ? (
+          <div className="empty">
+            <span className="big">📭</span>
+            No company emails yet.
+            <br />
+            Connect Gmail in Settings, then this fills up as recruiters reply.
           </div>
-        ))
-      )}
-    </div>
+        ) : (
+          <div className="group">
+            {events.map((ev) => (
+              <div className={`row mail ${ev.is_read ? "" : "unread"}`} key={ev.id}>
+                <div className="row-body">
+                  <div className="row-title">{ev.subject || "(no subject)"}</div>
+                  <div className="row-sub">
+                    <span>{ev.from_addr}</span>
+                  </div>
+                  {ev.snippet && <div className="mail-snip">{ev.snippet}</div>}
+                  {ev.classified_stage ? (
+                    <div className="mail-actions">
+                      <span className={`status st-${ev.classified_stage}`}>
+                        {ev.classified_stage}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="mail-actions">
+                      {STAGES.map((s) => (
+                        <button
+                          key={s}
+                          className="pill"
+                          onClick={() => classify(ev, s)}
+                        >
+                          {STAGE_LABEL[s]}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
   );
 }

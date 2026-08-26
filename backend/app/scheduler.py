@@ -1,11 +1,9 @@
-"""In-process APScheduler wiring for the three recurring background jobs.
+"""In-process APScheduler wiring for the recurring background job.
 
 Runs inside the FastAPI process (fine at single-user scale on an always-on host):
-  * MCF scrape        — hourly (configurable)
-  * company scrape    — every few hours
-  * Gmail poll        — every ~5 minutes
+  * Gmail poll — every ~5 minutes
 
-Each job is wrapped so an exception is logged, never crashing the scheduler thread.
+The job is wrapped so an exception is logged, never crashing the scheduler thread.
 """
 from __future__ import annotations
 
@@ -32,20 +30,6 @@ def _safe(fn):
     return wrapper
 
 
-def _run_mcf_scrape():
-    from .scrapers.runner import run_scrape
-
-    return run_scrape()
-
-
-def _run_company_scrape():
-    # Company modules are included in run_scrape(); a separate hook lets us tune cadence
-    # independently later. For now it shares the same pass.
-    from .scrapers.runner import run_scrape
-
-    return run_scrape()
-
-
 def _run_gmail_poll():
     from .gmail.poller import poll_once
 
@@ -61,13 +45,6 @@ def start_scheduler() -> None:
         return
 
     _scheduler = BackgroundScheduler(timezone="UTC")
-    _scheduler.add_job(
-        _safe(_run_mcf_scrape),
-        "interval",
-        minutes=settings.mcf_scrape_interval_min,
-        id="mcf_scrape",
-        next_run_time=None,  # don't run immediately on boot
-    )
     _scheduler.add_job(
         _safe(_run_gmail_poll),
         "interval",

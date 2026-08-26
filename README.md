@@ -1,19 +1,17 @@
 # JobTrack SG
 
-A personal job-search tracker for **fresh-grad roles, internships and management-associate
-programmes** in Singapore's **tech** and **finance** sectors. It aggregates listings
-(with links + salary), tracks your applications, watches your Gmail for confirmations and
-recruiter replies, and pings a Telegram bot.
+A personal job-application tracker for **fresh-grad roles, internships and
+management-associate programmes** in Singapore's **tech** and **finance** sectors. You
+paste the link to a job you care about; it tracks whether you've applied and how long it's
+been, watches your Gmail for confirmations and recruiter replies, and pings a Telegram bot.
 
 ## What it does
 
-- **Aggregates jobs** from [MyCareersFuture](https://www.mycareersfuture.gov.sg) (salary
-  ranges included) + targeted company career pages (Greenhouse-hosted boards out of the
-  box; add more per employer).
-- **Classifies** each role by sector (tech/finance) and type (fresh-grad / internship /
-  MA programme) and filters out senior roles.
-- **Tracks applications** through a pipeline: applied → confirmed → interviewing →
-  offer / rejected.
+- **Track by link**: paste a job URL and it best-effort **auto-detects the role + company**
+  (JSON-LD / Open Graph / `<title>`), which you confirm and save. No scraping, no catalog —
+  only the jobs you choose.
+- **Pipeline**: each application moves through *Saved → Applied → Confirmed → Interviewing →
+  Offer → Rejected*, showing **how long since you applied**.
 - **Watches Gmail** (read-only): auto-flips an application to *confirmed* when the
   confirmation email lands; surfaces any other email from a tracked company for you to
   one-tap classify.
@@ -22,14 +20,14 @@ recruiter replies, and pings a Telegram bot.
 ## Architecture
 
 A **single always-on FastAPI process** does everything: serves the REST API, serves the
-statically-built **Next.js** dashboard from the same origin, runs the APScheduler scrape +
-Gmail-poll jobs, and runs a **Telegram long-poll** bot (no webhook, so no public endpoint).
+statically-built **Next.js** dashboard from the same origin, runs the Gmail-poll job
+(APScheduler), and runs a **Telegram long-poll** bot (no webhook, so no public endpoint).
 The database is **SQLite** on disk — plenty for one user. Designed to run on a small
 always-on box (e.g. a GCP e2-micro); see [DEPLOY.md](DEPLOY.md).
 
 ```
-backend/   FastAPI (API + serves the dashboard) + scrapers + Gmail poller + Telegram bot + APScheduler
-frontend/  Next.js dashboard (Jobs / Applications / Inbox / Settings) — static-exported to frontend/out
+backend/   FastAPI (API + serves the dashboard) + link preview + Gmail poller + Telegram bot + APScheduler
+frontend/  Next.js dashboard (Applications / Inbox / Settings) — static-exported to frontend/out
 ```
 
 ## Local development

@@ -32,10 +32,26 @@ class JobOut(BaseModel):
     application_status: Optional[AppStatus] = None
 
 
-class TrackJobIn(BaseModel):
-    job_id: int
-    status: AppStatus = AppStatus.applied
+class CreateApplicationIn(BaseModel):
+    """Add an application from a pasted job link. Title/company are usually auto-filled by
+    the link-preview endpoint but the user can edit them before saving."""
+    url: str
+    title: str
+    company: str
+    sector: Sector = Sector.other
+    status: AppStatus = AppStatus.interested  # "Saved" by default; flip to applied later
     notes: Optional[str] = None
+
+
+class LinkPreviewIn(BaseModel):
+    url: str
+
+
+class LinkPreviewOut(BaseModel):
+    title: str
+    company: str
+    sector: Sector
+    ok: bool
 
 
 class ApplicationUpdateIn(BaseModel):

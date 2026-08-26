@@ -41,6 +41,13 @@ export interface Application {
   job: Job | null;
 }
 
+export interface LinkPreview {
+  title: string;
+  company: string;
+  sector: Sector;
+  ok: boolean;
+}
+
 export interface EmailEvent {
   id: number;
   from_addr: string;

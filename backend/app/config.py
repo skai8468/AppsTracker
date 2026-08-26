@@ -33,8 +33,6 @@ class Settings(BaseSettings):
 
     # --- Scheduler ---
     enable_scheduler: bool = True
-    mcf_scrape_interval_min: int = 60
-    company_scrape_interval_min: int = 240
     gmail_poll_interval_min: int = 5
 
     # --- Gmail ---

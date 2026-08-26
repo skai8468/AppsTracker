@@ -3,7 +3,8 @@ import type {
   AppStatus,
   Company,
   EmailEvent,
-  Job,
+  LinkPreview,
+  Sector,
 } from "./types";
 
 // Undefined (dev, no env set) -> localhost backend. Explicitly empty (production build,
@@ -22,32 +23,39 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await res.text();
     throw new Error(`${res.status}: ${body}`);
   }
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
   return res.json() as Promise<T>;
 }
 
-export interface JobFilters {
-  sector?: string;
-  job_type?: string;
-  q?: string;
-  min_salary?: number;
+export interface NewApplication {
+  url: string;
+  title: string;
+  company: string;
+  sector?: Sector;
+  status?: AppStatus;
+  notes?: string;
 }
 
 export const api = {
-  listJobs(f: JobFilters = {}): Promise<Job[]> {
-    const p = new URLSearchParams();
-    if (f.sector) p.set("sector", f.sector);
-    if (f.job_type) p.set("job_type", f.job_type);
-    if (f.q) p.set("q", f.q);
-    if (f.min_salary) p.set("min_salary", String(f.min_salary));
-    p.set("limit", "500");
-    return req<Job[]>(`/jobs?${p.toString()}`);
+  // Best-effort auto-detect of role/company from a pasted link.
+  previewLink(url: string): Promise<LinkPreview> {
+    return req<LinkPreview>("/applications/preview", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    });
   },
 
-  trackJob(job_id: number, status: AppStatus = "applied"): Promise<Application> {
+  addApplication(body: NewApplication): Promise<Application> {
     return req<Application>("/applications", {
       method: "POST",
-      body: JSON.stringify({ job_id, status }),
+      body: JSON.stringify(body),
     });
+  },
+
+  deleteApplication(id: number): Promise<void> {
+    return req<void>(`/applications/${id}`, { method: "DELETE" });
   },
 
   listApplications(): Promise<Application[]> {
@@ -84,9 +92,5 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     });
-  },
-
-  triggerScrape(): Promise<Record<string, number>> {
-    return req("/admin/scrape", { method: "POST" });
   },
 };

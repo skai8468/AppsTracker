@@ -1,37 +1,38 @@
-"""REST endpoints: jobs board, application pipeline, email-event inbox, companies, admin.
+"""REST endpoints: link preview, application pipeline, email-event inbox, companies, admin.
 
 Kept thin — DB access via SQLModel sessions, business rules (stage changes, matching)
 live in the models / integration modules.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ..db import get_session
+from ..linkpreview import fetch_meta
 from ..models import (
     Application,
     AppStatus,
     Company,
     EmailEvent,
     Job,
-    JobType,
-    Sector,
     utcnow,
 )
-from ..scrapers.runner import _slugify
+from ..util import slugify
 from .schemas import (
     ApplicationOut,
     ApplicationUpdateIn,
     ClassifyEmailIn,
     CompanyIn,
     CompanyOut,
+    CreateApplicationIn,
     EmailEventOut,
     JobOut,
-    TrackJobIn,
+    LinkPreviewIn,
+    LinkPreviewOut,
 )
 
 router = APIRouter()
@@ -63,61 +64,48 @@ def _job_to_out(job: Job, app: Optional[Application]) -> JobOut:
     )
 
 
-# --- jobs -----------------------------------------------------------------------------
+# --- link preview ---------------------------------------------------------------------
 
-@router.get("/jobs", response_model=list[JobOut])
-def list_jobs(
-    session: Session = Depends(get_session),
-    sector: Optional[Sector] = None,
-    job_type: Optional[JobType] = None,
-    q: Optional[str] = None,
-    min_salary: Optional[float] = None,
-    active_only: bool = True,
-    limit: int = Query(100, le=500),
-    offset: int = 0,
-):
-    stmt = select(Job)
-    if active_only:
-        stmt = stmt.where(Job.is_active == True)  # noqa: E712
-    if sector:
-        stmt = stmt.where(Job.sector == sector)
-    if job_type:
-        stmt = stmt.where(Job.job_type == job_type)
-    if min_salary is not None:
-        stmt = stmt.where(Job.salary_max >= min_salary)
-    if q:
-        like = f"%{q.lower()}%"
-        stmt = stmt.where(
-            (Job.title.ilike(like)) | (Job.company_name.ilike(like))
-        )
-    stmt = stmt.order_by(Job.posted_at.desc().nullslast(), Job.scraped_at.desc())
-    jobs = session.exec(stmt.offset(offset).limit(limit)).all()
-
-    # Attach tracking status in one lookup.
-    app_by_job = {
-        a.job_id: a
-        for a in session.exec(
-            select(Application).where(Application.job_id.in_([j.id for j in jobs]))
-        ).all()
-    } if jobs else {}
-    return [_job_to_out(j, app_by_job.get(j.id)) for j in jobs]
+@router.post("/applications/preview", response_model=LinkPreviewOut)
+def preview_link(body: LinkPreviewIn):
+    """Best-effort fetch of the pasted URL to pre-fill title/company. Never creates
+    anything; ``ok=false`` means the user should type the fields in."""
+    return LinkPreviewOut(**fetch_meta(body.url))
 
 
 # --- applications ---------------------------------------------------------------------
 
 @router.post("/applications", response_model=ApplicationOut)
-def track_job(body: TrackJobIn, session: Session = Depends(get_session)):
-    job = session.get(Job, body.job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-    existing = session.exec(
-        select(Application).where(Application.job_id == body.job_id)
+def create_application(body: CreateApplicationIn, session: Session = Depends(get_session)):
+    """Track a job from a pasted link: find-or-create its company, store a manual Job row,
+    and open an Application (defaulting to the 'Saved' stage)."""
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(422, "url is required")
+
+    # Don't track the same link twice.
+    dupe = session.exec(
+        select(Application).join(Job, Job.id == Application.job_id).where(Job.apply_url == url)
     ).first()
-    if existing:
-        raise HTTPException(409, "already tracking this job")
+    if dupe:
+        raise HTTPException(409, "already tracking this link")
+
+    company = _get_or_create_company(session, body.company, body.sector)
+    job = Job(
+        source="manual",
+        source_job_id=uuid.uuid4().hex,
+        title=body.title.strip() or url,
+        company_name=body.company.strip(),
+        company_id=company.id if company else None,
+        sector=body.sector,
+        apply_url=url,
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
 
     app = Application(
-        job_id=body.job_id,
+        job_id=job.id,
         status=body.status,
         notes=body.notes,
         applied_at=utcnow() if body.status == AppStatus.applied else None,
@@ -126,6 +114,22 @@ def track_job(body: TrackJobIn, session: Session = Depends(get_session)):
     session.commit()
     session.refresh(app)
     return _app_to_out(session, app)
+
+
+def _get_or_create_company(
+    session: Session, name: str, sector
+) -> Optional[Company]:
+    name = (name or "").strip()
+    if not name:
+        return None
+    slug = slugify(name)
+    company = session.exec(select(Company).where(Company.slug == slug)).first()
+    if company is None:
+        company = Company(name=name, slug=slug, sector=sector)
+        session.add(company)
+        session.commit()
+        session.refresh(company)
+    return company
 
 
 @router.get("/applications", response_model=list[ApplicationOut])
@@ -154,6 +158,24 @@ def update_application(
     session.commit()
     session.refresh(app)
     return _app_to_out(session, app)
+
+
+@router.delete("/applications/{app_id}", status_code=204)
+def delete_application(app_id: int, session: Session = Depends(get_session)):
+    app = session.get(Application, app_id)
+    if app is None:
+        raise HTTPException(404, "application not found")
+    # Detach any email events pointing at this application so they aren't orphaned.
+    for ev in session.exec(
+        select(EmailEvent).where(EmailEvent.matched_application_id == app_id)
+    ).all():
+        ev.matched_application_id = None
+        session.add(ev)
+    job = session.get(Job, app.job_id)
+    session.delete(app)
+    if job is not None and job.source == "manual":
+        session.delete(job)
+    session.commit()
 
 
 def _app_to_out(session: Session, app: Application) -> ApplicationOut:
@@ -214,7 +236,7 @@ def list_companies(session: Session = Depends(get_session)):
 
 @router.post("/companies", response_model=CompanyOut)
 def create_company(body: CompanyIn, session: Session = Depends(get_session)):
-    slug = _slugify(body.name)
+    slug = slugify(body.name)
     existing = session.exec(select(Company).where(Company.slug == slug)).first()
     if existing:
         raise HTTPException(409, "company already exists")
@@ -251,13 +273,6 @@ def update_company(
 
 
 # --- admin / manual triggers ----------------------------------------------------------
-
-@router.post("/admin/scrape")
-def trigger_scrape():
-    from ..scrapers.runner import run_scrape
-
-    return run_scrape()
-
 
 @router.post("/admin/poll-gmail")
 def trigger_gmail_poll():
