@@ -19,10 +19,11 @@ from fastapi.staticfiles import StaticFiles
 from .api.routes import router as api_router
 from .config import settings
 from .db import init_db
+from .logutil import configure_logging
 from .scheduler import shutdown_scheduler, start_scheduler
 from .telegram.bot import start_polling, stop_polling
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+configure_logging()
 log = logging.getLogger("jobtrack")
 
 
