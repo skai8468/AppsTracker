@@ -62,6 +62,20 @@ def get_service():
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 
+def is_connected() -> bool:
+    """Whether a usable Gmail token exists, without building an API client.
+
+    Used by ``GET /gmail/status`` so the dashboard can stop showing setup instructions
+    once authorization is done. Never raises — a broken/absent token is just False.
+    """
+    try:
+        creds = _load_credentials()
+    except Exception:  # noqa: BLE001 - malformed token file, refresh failure, no network
+        log.debug("Gmail credential check failed", exc_info=True)
+        return False
+    return bool(creds and creds.valid)
+
+
 def run_local_oauth() -> None:
     """Interactive one-time authorization (local machine only)."""
     from google_auth_oauthlib.flow import InstalledAppFlow

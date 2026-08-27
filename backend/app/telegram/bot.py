@@ -50,7 +50,7 @@ def _handle_update(update: dict[str, Any]) -> None:
         with session_scope() as session:
             set_setting(session, CHAT_ID_KEY, chat_id)
         send_message(
-            "👋 JobTrack SG connected! You'll get pings when:\n"
+            "👋 AppsTracker connected! You'll get pings when:\n"
             "• an application is confirmed\n"
             "• a tracked company emails you\n\n"
             "Commands: /status  /jobs",

@@ -39,6 +39,19 @@ export interface NewApplication {
   notes?: string;
 }
 
+/** Partial update — omitted fields are left untouched server-side. Covers the joined
+ *  Job/Company fields the detail sheet edits, so one save is one request. */
+export interface ApplicationPatch {
+  status?: AppStatus;
+  notes?: string;
+  applied_at?: string | null;
+  title?: string;
+  company?: string;
+  apply_url?: string;
+  sector?: Sector;
+  email_domains?: string;
+}
+
 export const api = {
   // Best-effort auto-detect of role/company from a pasted link.
   previewLink(url: string): Promise<LinkPreview> {
@@ -63,10 +76,7 @@ export const api = {
     return req<Application[]>("/applications");
   },
 
-  updateApplication(
-    id: number,
-    patch: { status?: AppStatus; notes?: string }
-  ): Promise<Application> {
+  updateApplication(id: number, patch: ApplicationPatch): Promise<Application> {
     return req<Application>(`/applications/${id}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
@@ -93,5 +103,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     });
+  },
+
+  // Partial patch: only the keys sent are changed.
+  updateCompany(id: number, patch: Partial<Company>): Promise<Company> {
+    return req<Company>(`/companies/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  },
+
+  gmailStatus(): Promise<{ connected: boolean }> {
+    return req<{ connected: boolean }>("/gmail/status");
   },
 };

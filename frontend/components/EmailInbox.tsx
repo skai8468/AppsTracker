@@ -3,14 +3,10 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { AppStatus, EmailEvent } from "@/lib/types";
+import { Nav, STAGE_LABEL } from "./ui";
 
+/** The stages worth one-tap classifying straight from an email. */
 const STAGES: AppStatus[] = ["confirmed", "interviewing", "offer", "rejected"];
-const STAGE_LABEL: Record<string, string> = {
-  confirmed: "Confirmed",
-  interviewing: "Interview",
-  offer: "Offer",
-  rejected: "Rejected",
-};
 
 export default function EmailInbox() {
   const [events, setEvents] = useState<EmailEvent[]>([]);
@@ -35,25 +31,16 @@ export default function EmailInbox() {
 
   return (
     <>
-      <header className="nav">
-        <div className="nav-bar">
-          <div />
-        </div>
-        <h1 className="large-title">Inbox</h1>
-        <p className="nav-sub">
-          Emails from tracked companies · tap a stage to update the application
-        </p>
-      </header>
+      <Nav title="Inbox" sub="Tap a stage to update the application" />
 
       <div className="content">
         {loading ? (
           <div className="loading">Loading…</div>
         ) : events.length === 0 ? (
           <div className="empty">
-            <span className="big">📭</span>
             No company emails yet.
             <br />
-            Connect Gmail in Settings, then this fills up as recruiters reply.
+            This fills up as tracked companies reply.
           </div>
         ) : (
           <div className="group">
@@ -67,8 +54,8 @@ export default function EmailInbox() {
                   {ev.snippet && <div className="mail-snip">{ev.snippet}</div>}
                   {ev.classified_stage ? (
                     <div className="mail-actions">
-                      <span className={`status st-${ev.classified_stage}`}>
-                        {ev.classified_stage}
+                      <span className={`status status-static st-${ev.classified_stage}`}>
+                        {STAGE_LABEL[ev.classified_stage]}
                       </span>
                     </div>
                   ) : (

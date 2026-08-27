@@ -29,6 +29,10 @@ export interface Job {
   is_active: boolean;
   application_id: number | null;
   application_status: AppStatus | null;
+  // Joined-in company info, so the detail view can edit the tracked sender domain(s)
+  // without a second /companies fetch.
+  company_id: number | null;
+  company_email_domains: string;
 }
 
 export interface Application {

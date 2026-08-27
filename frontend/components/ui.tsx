@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, type ReactNode } from "react";
 import type { AppStatus, Sector } from "@/lib/types";
 
 /** Pipeline stages shown as grouped-list sections, in order. "interested" = Saved. */
@@ -27,6 +30,22 @@ export const STAGE_LABEL: Record<AppStatus, string> = {
 };
 
 export const stageClass = (s: AppStatus) => `st-${s}`;
+
+/** The three filter tabs, and which underlying statuses each one collects.
+ *
+ *  All seven statuses stay in the data model — the Gmail poller sets `confirmed` on its
+ *  own — these groups only decide what the list shows. */
+export type Filter = "saved" | "applied" | "rejected";
+
+export const FILTERS: { key: Filter; label: string; statuses: AppStatus[] }[] = [
+  { key: "saved", label: "Saved", statuses: ["interested"] },
+  {
+    key: "applied",
+    label: "Applied",
+    statuses: ["applied", "confirmed", "interviewing", "offer"],
+  },
+  { key: "rejected", label: "Rejected", statuses: ["rejected", "withdrawn"] },
+];
 
 /** Section-dot color per stage (mirrors the status-pill colors in globals.css). */
 export const STAGE_COLOR: Record<AppStatus, string> = {
@@ -66,6 +85,126 @@ export function Monogram({ name }: { name: string }) {
   );
 }
 
+/** Compact page header. Every view shares this, so title sizing changes in one place.
+ *
+ *  `filters` (a segmented control) sits on its own row under the title on a phone and
+ *  moves up beside the title on desktop, where there's width to spare. */
+export function Nav({
+  title,
+  sub,
+  filters,
+  actions,
+}: {
+  title: string;
+  sub?: string;
+  filters?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <header className="nav">
+      <div className="nav-bar">
+        <div className="nav-titles">
+          <h1 className="large-title">{title}</h1>
+          {sub && <p className="nav-sub">{sub}</p>}
+        </div>
+        {actions && <div className="nav-actions">{actions}</div>}
+        {filters && <div className="nav-filters">{filters}</div>}
+      </div>
+    </header>
+  );
+}
+
+/** Monochrome stroke icons. Inline SVG keeps the zero-dependency stack intact. */
+const ICON_PATHS: Record<string, ReactNode> = {
+  list: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <path d="M7 9h10M7 13h10M7 17h5" />
+    </>
+  ),
+  mail: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="2.5" />
+      <path d="m3.5 7.5 8.5 6 8.5-6" />
+    </>
+  ),
+  plus: <path d="M12 5v14M5 12h14" />,
+};
+
+export function Icon({ name, size = 26 }: { name: keyof typeof ICON_PATHS | string; size?: number }) {
+  return (
+    <svg
+      className="ico"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {ICON_PATHS[name] ?? null}
+    </svg>
+  );
+}
+
+/** iOS-style bottom sheet. On wide screens CSS re-renders it as a docked side pane. */
+export function Sheet({
+  open,
+  onClose,
+  title,
+  leading,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  leading?: ReactNode;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    // Stop the page behind the scrim from scrolling under the sheet.
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [open, onClose]);
+
+  if (!open) return null;
+  return (
+    <div className="scrim" onClick={onClose}>
+      <div
+        className="sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="grabber" />
+        <div className="sheet-head">
+          {leading ?? (
+            <button className="btn-plain" onClick={onClose}>
+              Cancel
+            </button>
+          )}
+          <span className="sheet-title">{title}</span>
+          <span style={{ width: 52 }} />
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function timeAgo(iso: string | null): string {
   if (!iso) return "";
   const d = new Date(iso).getTime();
@@ -74,4 +213,32 @@ export function timeAgo(iso: string | null): string {
   if (days === 1) return "1 day ago";
   if (days < 30) return `${days} days ago`;
   return `${Math.floor(days / 30)} mo ago`;
+}
+
+/** ISO timestamp -> the `YYYY-MM-DD` an <input type="date"> expects (local calendar day). */
+export function toDateInput(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** `YYYY-MM-DD` -> ISO timestamp for the API. Empty input clears the date. */
+export function fromDateInput(value: string): string | null {
+  if (!value) return null;
+  const d = new Date(`${value}T12:00:00`); // midday avoids tz-shifting the calendar day
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/** Long date for display, e.g. "12 Aug 2026". */
+export function formatDate(iso: string | null): string {
+  if (!iso) return "Not set";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Not set";
+  return d.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
 }

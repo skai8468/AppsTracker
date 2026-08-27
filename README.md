@@ -1,4 +1,4 @@
-# JobTrack SG
+# AppsTracker
 
 A personal job-application tracker for **fresh-grad roles, internships and
 management-associate programmes** in Singapore's **tech** and **finance** sectors. You
@@ -79,7 +79,7 @@ broken site never aborts a scrape pass.
 
 Runs as one always-on process on a small VM (built for a **GCP e2-micro / Debian**). The
 backend serves both the API and the static dashboard; the dashboard is reached over an SSH
-tunnel, so nothing is publicly exposed. `deploy/jobtrack.service` (systemd) and
+tunnel, so nothing is publicly exposed. `deploy/appstracker.service` (systemd) and
 `deploy/deploy.sh` (pull → build → restart) automate it. Full walkthrough in
 [DEPLOY.md](DEPLOY.md).
 

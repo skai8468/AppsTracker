@@ -24,7 +24,7 @@ from .scheduler import shutdown_scheduler, start_scheduler
 from .telegram.bot import start_polling, stop_polling
 
 configure_logging()
-log = logging.getLogger("jobtrack")
+log = logging.getLogger("appstracker")
 
 
 @asynccontextmanager
@@ -32,13 +32,13 @@ async def lifespan(app: FastAPI):
     init_db()
     start_scheduler()
     start_polling()
-    log.info("JobTrack SG backend ready")
+    log.info("AppsTracker backend ready")
     yield
     stop_polling()
     shutdown_scheduler()
 
 
-app = FastAPI(title="JobTrack SG", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="AppsTracker", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

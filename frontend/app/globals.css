@@ -1,5 +1,5 @@
 /* ---------------------------------------------------------------------------
-   JobTrack SG — iOS-style design system (hand-rolled, no Tailwind).
+   AppsTracker — iOS-style design system (hand-rolled, no Tailwind).
    Light on bare :root; dark via prefers-color-scheme (+ [data-theme] escape hatch).
 --------------------------------------------------------------------------- */
 :root {
@@ -33,7 +33,6 @@
 
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.05), 0 6px 20px rgba(0, 0, 0, 0.04);
   --shadow-sheet: 0 -1px 0 rgba(0, 0, 0, 0.04), 0 -12px 40px rgba(0, 0, 0, 0.18);
-  --shadow-fab: 0 6px 16px rgba(0, 122, 255, 0.36), 0 2px 6px rgba(0, 0, 0, 0.14);
 
   --r-card: 12px;
   --r-pill: 980px;
@@ -127,9 +126,11 @@ button { font-family: inherit; }
   max-width: 680px;
   margin: 0 auto;
   min-height: 100vh;
-  padding-bottom: 96px; /* clear the fixed tab bar */
+  /* clear the fixed tab bar, plus the home-indicator area on modern iPhones */
+  padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px));
   position: relative;
 }
+.main { min-width: 0; }
 
 .nav {
   position: sticky;
@@ -139,15 +140,23 @@ button { font-family: inherit; }
   -webkit-backdrop-filter: var(--nav-blur);
   backdrop-filter: var(--nav-blur);
   border-bottom: 0.5px solid var(--separator);
-  padding: 8px 20px 12px;
+  padding: 10px 20px 11px;
 }
 .nav-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 36px;
+  gap: 12px;
+  flex-wrap: wrap;
 }
+.nav-titles { min-width: 0; }
 .nav-actions { display: flex; gap: 4px; align-items: center; }
+/* Phone: the filter row wraps onto its own full-width line, clear of the title. */
+.nav-filters {
+  flex: 1 0 100%;
+  margin-top: 12px;
+}
+.nav-filters .segmented { margin: 0; }
 .icon-btn {
   border: none;
   background: none;
@@ -160,16 +169,16 @@ button { font-family: inherit; }
 }
 .icon-btn:active { background: var(--bg-fill); }
 .large-title {
-  font-size: 34px;
-  font-weight: 700;
-  letter-spacing: 0.37px;
-  line-height: 1.1;
-  margin: 6px 0 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+  line-height: 1.2;
+  margin: 0;
 }
 .nav-sub {
   color: var(--label-secondary);
-  font-size: 14px;
-  margin: 3px 0 0;
+  font-size: 13px;
+  margin: 2px 0 0;
 }
 
 .content { padding: 16px 20px 8px; }
@@ -243,9 +252,9 @@ button { font-family: inherit; }
 .row {
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
-  padding: 11px 14px 11px 12px;
+  padding: 11px 12px;
 }
 .row + .row::before {
   content: "";
@@ -253,6 +262,24 @@ button { font-family: inherit; }
   top: 0; left: 60px; right: 0;
   height: 0.5px;
   background: var(--separator);
+}
+/* A whole row that acts as a button — reset the UA button styling. */
+.row-tap {
+  width: 100%;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.row-tap:active { background: var(--bg-fill); }
+.row-chevron {
+  align-self: center;
+  flex-shrink: 0;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--label-tertiary);
 }
 .mono {
   width: 42px; height: 42px;
@@ -268,20 +295,26 @@ button { font-family: inherit; }
 }
 .row-body { flex: 1; min-width: 0; }
 .row-title {
-  font-size: 16px;
+  font-size: 15.5px;
   font-weight: 600;
   letter-spacing: -0.2px;
+  line-height: 1.3;
   color: var(--label);
-  white-space: nowrap;
+  /* The role is the most important field: let it wrap to two lines rather than
+     truncating it to make room for controls. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 .row-sub {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 2px;
-  font-size: 13.5px;
+  margin-top: 4px;
+  font-size: 13px;
   color: var(--label-secondary);
   flex-wrap: wrap;
 }
@@ -323,6 +356,12 @@ button { font-family: inherit; }
   cursor: pointer;
   font-family: inherit;
 }
+/* Read-only badge form, used on list rows where the row itself is the tap target. */
+.status-static {
+  padding: 2px 8px;
+  font-size: 11.5px;
+  cursor: inherit;
+}
 .st-interested, .st-withdrawn { color: var(--gray);   background: var(--gray-bg); }
 .st-applied  { color: var(--blue);   background: var(--blue-bg); }
 .st-confirmed { color: var(--indigo); background: var(--indigo-bg); }
@@ -343,6 +382,26 @@ button { font-family: inherit; }
 }
 .btn-primary:active { background: var(--accent-press); transform: scale(0.99); }
 .btn-primary:disabled { background: var(--bg-fill); color: var(--label-tertiary); cursor: default; transform: none; }
+/* Secondary + destructive full-width actions, used in the detail sheet. */
+.btn-secondary,
+.btn-danger {
+  display: block;
+  width: 100%;
+  border: none;
+  border-radius: 14px;
+  padding: 14px;
+  margin-top: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  font-family: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.btn-secondary { background: var(--bg-fill); color: var(--accent); }
+.btn-secondary:active { background: var(--bg-fill-2); }
+.btn-danger { background: var(--red-bg); color: var(--red); }
+.btn-danger:active { filter: brightness(0.95); }
+
 .btn-plain {
   border: none;
   background: none;
@@ -493,26 +552,6 @@ button { font-family: inherit; }
   margin: 0 4px 7px;
 }
 
-/* --- floating add button --- */
-.fab {
-  position: fixed;
-  z-index: 30;
-  bottom: 84px;
-  right: calc(50% - 340px + 20px);
-  width: 56px; height: 56px;
-  border: none;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #fff;
-  font-size: 30px;
-  font-weight: 300;
-  line-height: 1;
-  cursor: pointer;
-  box-shadow: var(--shadow-fab);
-}
-.fab:active { transform: scale(0.92); background: var(--accent-press); }
-@media (max-width: 720px) { .fab { right: 20px; } }
-
 /* --- bottom tab bar --- */
 .tabbar {
   position: fixed;
@@ -527,7 +566,7 @@ button { font-family: inherit; }
   -webkit-backdrop-filter: var(--nav-blur);
   backdrop-filter: var(--nav-blur);
   border-top: 0.5px solid var(--separator);
-  padding: 8px 0 10px;
+  padding: 10px 0 calc(12px + env(safe-area-inset-bottom, 0px));
 }
 .tab {
   flex: 1;
@@ -537,13 +576,16 @@ button { font-family: inherit; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
-  color: var(--label-tertiary);
+  gap: 4px;
+  /* Monochrome by default; the active tab is the only colored one. */
+  color: var(--label-secondary);
   position: relative;
+  padding: 2px 0;
 }
 .tab.active { color: var(--accent); }
-.tab-ico { font-size: 22px; line-height: 1; }
-.tab-label { font-size: 10.5px; font-weight: 500; }
+.tab-ico { display: flex; line-height: 1; }
+.tab-ico .ico { display: block; }
+.tab-label { font-size: 11.5px; font-weight: 500; }
 .tab-badge {
   position: absolute;
   top: -2px;
@@ -612,27 +654,187 @@ button { font-family: inherit; }
 }
 
 /* --- settings extras --- */
-.row-warn { margin-top: 3px; font-size: 12.5px; color: var(--orange); }
+.row-warn { font-size: 12.5px; color: var(--orange); }
 .field textarea { resize: none; }
+
+/* --- application detail sheet --- */
+.detail-head { padding: 2px 2px 14px; }
+.detail-title {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  line-height: 1.28;
+  overflow-wrap: anywhere;
+}
+/* Explains why a stage was set automatically, so "Confirmed" isn't mysterious. */
+.detail-note {
+  display: flex;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--label-secondary);
+  background: var(--green-bg);
+  border-radius: var(--r-field);
+  padding: 9px 11px;
+  margin: -6px 0 16px;
+}
+.field select.status { margin-left: auto; }
+.field input[type="date"] { color-scheme: light dark; }
+/* Sector/stage pickers that sit inline in a form rather than under the nav. */
+.segmented-inline { margin: 0 0 18px; }
 
 /* --- desktop polish: hover affordances only where a real pointer exists --- */
 @media (hover: hover) {
-  .row:hover { background: var(--bg-fill); }
+  .row-tap:hover { background: var(--bg-fill); }
   .pill:hover { background: var(--bg-fill-2); }
   .icon-btn:hover { background: var(--bg-fill); }
-  .tab:hover { color: var(--label-secondary); }
+  .tab:hover { color: var(--label); }
   .tab.active:hover { color: var(--accent); }
   .btn-primary:not(:disabled):hover { filter: brightness(1.05); }
-  .fab:hover { filter: brightness(1.05); }
+  .btn-secondary:hover { background: var(--bg-fill-2); }
+  .btn-danger:hover { filter: brightness(0.97); }
   .status:hover { filter: brightness(0.97); }
   .segmented button:not(.active):hover { color: var(--label); }
 }
 
-/* On wide screens keep the app a centered column but let it breathe a little. */
+/* --- desktop: sidebar + content, with the sheet docked as a right-hand pane --------- */
 @media (min-width: 900px) {
-  .shell { max-width: 720px; }
-  .tabbar { max-width: 720px; }
-  .fab { right: calc(50% - 360px + 20px); }
+  .shell {
+    /* Widths live in variables so the reserved grid column and the pane's own width
+       can't drift apart when they're retuned per breakpoint below. */
+    --side-w: 220px;
+    --pane-w: 340px;
+    max-width: 1180px;
+    display: grid;
+    grid-template-columns: var(--side-w) minmax(0, 1fr);
+    align-items: start;
+    padding-bottom: 0;
+    gap: 0;
+  }
+
+  /* The tab bar stops floating and becomes a real sidebar. */
+  .tabbar {
+    position: sticky;
+    top: 0;
+    left: auto;
+    transform: none;
+    max-width: none;
+    height: 100vh;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 2px;
+    padding: 20px 12px;
+    border-top: none;
+    border-right: 0.5px solid var(--separator);
+    background: transparent;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .tab {
+    flex: 0 0 auto;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 11px;
+    padding: 9px 12px;
+    border-radius: 9px;
+  }
+  .tab.active { background: var(--bg-fill); }
+  .tab-label { font-size: 14px; }
+  .tab-badge {
+    position: static;
+    margin-left: auto;
+  }
+
+  .main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: max-content;
+    align-content: start;
+    min-height: 100vh;
+  }
+  /* When a sheet is open, split the content area and dock it on the right. */
+  .main:has(.scrim) { grid-template-columns: minmax(0, 1fr) var(--pane-w); }
+  /* Pin the view's own chrome to column 1 — without this the children auto-place and the
+     content lands beside the header. */
+  .main > .nav,
+  .main > .content { grid-column: 1; }
+  /* Desktop has the width to put the filters up beside the title instead of below it. */
+  .nav-bar { flex-wrap: nowrap; }
+  .nav-filters {
+    flex: 0 0 auto;
+    width: 320px;
+    margin-top: 0;
+  }
+  /* The pane is positioned against the shell rather than placed in the grid: as a grid
+     item spanning every row it stretched the header to its own full height. Column 2 is
+     still reserved above, so the list never runs underneath it. */
+  .main > .scrim {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    /* The base rule sets `inset: 0`; leaving left at 0 over-constrains the box and the
+       pane snaps to the left edge, on top of the sidebar. */
+    left: auto;
+    width: var(--pane-w);
+  }
+
+  .nav { padding: 18px 24px; }
+  .large-title { font-size: 26px; }
+  .content { padding: 18px 24px 32px; }
+
+  /* Sheet -> docked pane: no scrim, no slide-up, just a bordered column. */
+  .scrim {
+    position: static;
+    display: block;
+    background: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    animation: none;
+    z-index: auto;
+  }
+  .sheet {
+    position: sticky;
+    top: 0;
+    max-width: none;
+    max-height: 100vh;
+    border-radius: 0;
+    border-left: 0.5px solid var(--separator);
+    box-shadow: none;
+    background: var(--bg-grouped);
+    padding: 16px 20px 32px;
+    animation: none;
+  }
+  .grabber { display: none; }
+}
+
+/* --- large desktop monitors: use more of the glass rather than a narrow column ------- */
+@media (min-width: 1500px) {
+  .shell {
+    --side-w: 250px;
+    --pane-w: 400px;
+    max-width: 1500px;
+  }
+  .nav { padding: 22px 32px; }
+  .content { padding: 20px 32px 40px; }
+  .large-title { font-size: 28px; }
+  .nav-filters { width: 360px; }
+}
+
+@media (min-width: 2100px) {
+  /* 27"–32" territory (a 31.5" panel is usually 2560px wide). */
+  .shell {
+    --side-w: 280px;
+    --pane-w: 440px;
+    max-width: 1880px;
+  }
+  .nav { padding: 26px 40px; }
+  .content { padding: 24px 40px 48px; }
+  .large-title { font-size: 30px; }
+  /* Rows get long on an ultra-wide column — cap the text block so titles stay scannable
+     instead of stretching the full width. */
+  .row-body { max-width: 1100px; }
 }
 
 .pill, .status, .btn-primary, .icon-btn, .tab, .fab, .row, .segmented button {

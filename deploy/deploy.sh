@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Pull latest, rebuild, and restart JobTrack SG. Idempotent — safe to re-run.
-# Run on the VM as root:   sudo /opt/jobtrack-sg/deploy/deploy.sh
-# Builds run as the unprivileged `jobtrack` user (so file ownership stays correct);
+# Pull latest, rebuild, and restart AppsTracker. Idempotent — safe to re-run.
+# Run on the VM as root:   sudo /opt/appstracker/deploy/deploy.sh
+# Builds run as the unprivileged `appstracker` user (so file ownership stays correct);
 # the service restart runs as root.
 set -euo pipefail
 
-APP_DIR=/opt/jobtrack-sg
+APP_DIR=/opt/appstracker
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run with sudo: sudo $APP_DIR/deploy/deploy.sh" >&2
   exit 1
 fi
 
-as_app() { sudo -u jobtrack bash -lc "$1"; }
+as_app() { sudo -u appstracker bash -lc "$1"; }
 
 echo "==> git pull"
 as_app "git -C $APP_DIR pull --ff-only"
@@ -26,6 +26,6 @@ echo "==> frontend static build (-> frontend/out)"
 as_app "cd $APP_DIR/frontend && npm ci && NODE_OPTIONS='--max-old-space-size=512' NEXT_PUBLIC_API_BASE='' npm run build"
 
 echo "==> restart service"
-systemctl restart jobtrack
+systemctl restart appstracker
 
-echo "==> done. Logs: journalctl -u jobtrack -f"
+echo "==> done. Logs: journalctl -u appstracker -f"

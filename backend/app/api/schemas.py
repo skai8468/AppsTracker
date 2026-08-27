@@ -30,6 +30,10 @@ class JobOut(BaseModel):
     # Joined-in tracking status, if the user is already tracking this job.
     application_id: Optional[int] = None
     application_status: Optional[AppStatus] = None
+    # Joined-in company info so the detail view can show and edit the tracked sender
+    # domain(s) without a second /companies fetch and a client-side slug join.
+    company_id: Optional[int] = None
+    company_email_domains: str = ""
 
 
 class CreateApplicationIn(BaseModel):
@@ -58,8 +62,24 @@ class LinkPreviewOut(BaseModel):
 
 
 class ApplicationUpdateIn(BaseModel):
+    """Partial update. Every field is optional; ``None`` means "leave unchanged".
+
+    Beyond the application's own columns this also accepts the handful of joined Job /
+    Company fields the detail view lets you edit, so the UI can save everything in one
+    request instead of juggling three endpoints.
+    """
     status: Optional[AppStatus] = None
     notes: Optional[str] = None
+    # Lets the user correct the applied date (e.g. backdating a job applied for last week).
+    applied_at: Optional[datetime] = None
+
+    # --- joined Job fields ---
+    title: Optional[str] = None
+    company: Optional[str] = None
+    apply_url: Optional[str] = None
+    sector: Optional[Sector] = None
+    # --- joined Company field: comma-separated sender domains for Gmail matching ---
+    email_domains: Optional[str] = None
 
 
 class ApplicationOut(BaseModel):
@@ -94,6 +114,24 @@ class CompanyIn(BaseModel):
     career_page_url: Optional[str] = None
     sector: Sector = Sector.other
     notes: Optional[str] = None
+
+
+class CompanyPatchIn(BaseModel):
+    """True partial update — unlike ``CompanyIn``, omitting a field leaves it alone.
+
+    ``CompanyIn`` defaults its optional fields, so reusing it for PATCH silently wiped
+    ``notes``/``career_page_url`` and reset ``sector`` whenever the UI sent just a name and
+    a domain.
+    """
+    name: Optional[str] = None
+    email_domains: Optional[str] = None
+    career_page_url: Optional[str] = None
+    sector: Optional[Sector] = None
+    notes: Optional[str] = None
+
+
+class GmailStatusOut(BaseModel):
+    connected: bool
 
 
 class CompanyOut(BaseModel):

@@ -1,4 +1,4 @@
-# Deploying JobTrack SG on a GCP e2-micro (Debian)
+# Deploying AppsTracker on a GCP e2-micro (Debian)
 
 The whole app runs as **one always-on process** on a single small VM:
 
@@ -69,36 +69,36 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 ## 4. Get the code + a service user
 ```bash
-sudo useradd -r -m -d /opt/jobtrack-sg -s /usr/sbin/nologin jobtrack || true
-sudo git clone https://github.com/skai8468/jobtrack-sg.git /opt/jobtrack-sg
-sudo chown -R jobtrack:jobtrack /opt/jobtrack-sg
+sudo useradd -r -m -d /opt/appstracker -s /usr/sbin/nologin appstracker || true
+sudo git clone https://github.com/skai8468/appstracker.git /opt/appstracker
+sudo chown -R appstracker:appstracker /opt/appstracker
 ```
 
 ## 5. Configure secrets + copy the Gmail token
 ```bash
-sudo -u jobtrack cp /opt/jobtrack-sg/backend/.env.example /opt/jobtrack-sg/backend/.env
-sudo -u jobtrack nano /opt/jobtrack-sg/backend/.env      # set TELEGRAM_BOT_TOKEN
+sudo -u appstracker cp /opt/appstracker/backend/.env.example /opt/appstracker/backend/.env
+sudo -u appstracker nano /opt/appstracker/backend/.env      # set TELEGRAM_BOT_TOKEN
 ```
 From your **laptop**, copy the token you generated in step 0b:
 ```bash
 scp backend/token.json <you>@<vm>:/tmp/token.json
 # on the VM:
-sudo mv /tmp/token.json /opt/jobtrack-sg/backend/token.json
-sudo chown jobtrack:jobtrack /opt/jobtrack-sg/backend/token.json
+sudo mv /tmp/token.json /opt/appstracker/backend/token.json
+sudo chown appstracker:appstracker /opt/appstracker/backend/token.json
 ```
 (SQLite needs no config — it's the default. Leave `DATABASE_URL` empty.)
 
 ## 6. Install the service unit (before the first build)
 ```bash
-sudo cp /opt/jobtrack-sg/deploy/jobtrack.service /etc/systemd/system/jobtrack.service
+sudo cp /opt/appstracker/deploy/appstracker.service /etc/systemd/system/appstracker.service
 sudo systemctl daemon-reload
-sudo systemctl enable jobtrack        # enable, don't start yet — nothing is built
+sudo systemctl enable appstracker        # enable, don't start yet — nothing is built
 ```
 
 ## 7. First build + start
 ```bash
-sudo /opt/jobtrack-sg/deploy/deploy.sh   # builds venv + frontend, then starts the service
-journalctl -u jobtrack -f                # expect "backend ready" + "Telegram long-poll started"
+sudo /opt/appstracker/deploy/deploy.sh   # builds venv + frontend, then starts the service
+journalctl -u appstracker -f                # expect "backend ready" + "Telegram long-poll started"
 ```
 
 ## 8. Connect Telegram
@@ -119,17 +119,54 @@ the tunnel; nothing is exposed publicly.
 ## Updating later
 ```bash
 ssh <you>@<vm>
-sudo /opt/jobtrack-sg/deploy/deploy.sh   # pull, rebuild, restart
+sudo /opt/appstracker/deploy/deploy.sh   # pull, rebuild, restart
 ```
 If `next build` ever OOMs despite swap, build the frontend on your laptop
 (`NEXT_PUBLIC_API_BASE= npm run build`) and `rsync frontend/out/` to
-`/opt/jobtrack-sg/frontend/out/` instead — the VM then needs only Python.
+`/opt/appstracker/frontend/out/` instead — the VM then needs only Python.
+
+## Migrating an existing "JobTrack SG" install
+
+Only needed once, on a VM provisioned before the rename. A `git pull` alone can't do this —
+the systemd unit, the Linux user and the `/opt` directory all carry the old name.
+
+Push the renamed code to GitHub **first** — the new unit file and deploy script have to be
+in the checkout before they can be installed.
+
+```bash
+# 1. stop the old service and back up the database
+sudo systemctl stop jobtrack && sudo systemctl disable jobtrack
+sudo cp /opt/jobtrack-sg/backend/jobtrack.sqlite ~/appstracker-backup.sqlite
+
+# 2. rename the directory, the user and the group
+sudo mv /opt/jobtrack-sg /opt/appstracker
+sudo usermod -l appstracker -d /opt/appstracker jobtrack
+sudo groupmod -n appstracker jobtrack
+sudo chown -R appstracker:appstracker /opt/appstracker
+
+# 3. pull the renamed code BEFORE installing the unit — deploy/appstracker.service and the
+#    updated deploy.sh only exist after this. (Set the remote first if you renamed the repo.)
+sudo -u appstracker git -C /opt/appstracker remote set-url origin <new-url>
+sudo -u appstracker git -C /opt/appstracker pull --ff-only
+
+# 4. install the new unit and start
+sudo rm /etc/systemd/system/jobtrack.service
+sudo cp /opt/appstracker/deploy/appstracker.service /etc/systemd/system/appstracker.service
+sudo systemctl daemon-reload && sudo systemctl enable appstracker
+sudo /opt/appstracker/deploy/deploy.sh
+```
+
+The database file is **left alone on purpose**. The app prefers `appstracker.sqlite` but
+falls back to an existing `jobtrack.sqlite`, so your data keeps working untouched. SQLite
+creates a missing file silently rather than erroring, so renaming it without that fallback
+would look like every tracked application had vanished. To finish the rename later, stop the
+service, `mv backend/jobtrack.sqlite backend/appstracker.sqlite`, and start it again.
 
 ## Notes / gotchas
 - **Single worker only.** The systemd unit runs `uvicorn --workers 1` on purpose: the
   scheduler and Telegram poller are in-process singletons. More workers = double scrapes
   and Telegram `getUpdates` conflicts.
-- **Backups.** The database is one file: `backend/jobtrack.sqlite`. `cp` it (or
+- **Backups.** The database is one file: `backend/appstracker.sqlite`. `cp` it (or
   `sqlite3 .backup`) on a cron for peace of mind.
 - **Gmail token refresh.** `token.json` carries a long-lived refresh token; the app
   refreshes the short access token itself. If Google revokes it (password change, or the

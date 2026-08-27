@@ -28,8 +28,10 @@ from .schemas import (
     ClassifyEmailIn,
     CompanyIn,
     CompanyOut,
+    CompanyPatchIn,
     CreateApplicationIn,
     EmailEventOut,
+    GmailStatusOut,
     JobOut,
     LinkPreviewIn,
     LinkPreviewOut,
@@ -40,7 +42,9 @@ router = APIRouter()
 
 # --- helpers --------------------------------------------------------------------------
 
-def _job_to_out(job: Job, app: Optional[Application]) -> JobOut:
+def _job_to_out(
+    job: Job, app: Optional[Application], company: Optional[Company] = None
+) -> JobOut:
     return JobOut(
         id=job.id,
         source=job.source,
@@ -61,6 +65,8 @@ def _job_to_out(job: Job, app: Optional[Application]) -> JobOut:
         is_active=job.is_active,
         application_id=app.id if app else None,
         application_status=app.status if app else None,
+        company_id=job.company_id,
+        company_email_domains=company.email_domains if company else "",
     )
 
 
@@ -162,10 +168,50 @@ def update_application(
             app.applied_at = utcnow()
     if body.notes is not None:
         app.notes = body.notes
+    # Explicit date wins over the auto-stamp above, so a correction isn't overwritten when
+    # the same request also moves the application into "applied".
+    if body.applied_at is not None:
+        app.applied_at = body.applied_at
     session.add(app)
+
+    _update_joined_job(session, app, body)
+
     session.commit()
     session.refresh(app)
     return _app_to_out(session, app)
+
+
+def _update_joined_job(
+    session: Session, app: Application, body: ApplicationUpdateIn
+) -> None:
+    """Apply the detail view's Job/Company edits. No-op when none were sent."""
+    job = session.get(Job, app.job_id)
+    if job is None:
+        return
+
+    if body.title is not None and body.title.strip():
+        job.title = body.title.strip()
+    if body.apply_url is not None and body.apply_url.strip():
+        job.apply_url = body.apply_url.strip()
+    if body.sector is not None:
+        job.sector = body.sector
+    if body.company is not None and body.company.strip():
+        # Renaming the employer re-points the job at that company (creating it if new), so
+        # Gmail matching follows the rename instead of staying on the old row.
+        company = _get_or_create_company(
+            session, body.company, body.sector or job.sector, body.email_domains
+        )
+        job.company_name = body.company.strip()
+        job.company_id = company.id if company else None
+    session.add(job)
+
+    if body.email_domains is not None and job.company_id:
+        # Unlike the add-by-link backfill, an explicit edit overwrites existing domains —
+        # that's the only way to correct a wrong one.
+        company = session.get(Company, job.company_id)
+        if company is not None:
+            company.email_domains = body.email_domains.strip()
+            session.add(company)
 
 
 @router.delete("/applications/{app_id}", status_code=204)
@@ -188,6 +234,9 @@ def delete_application(app_id: int, session: Session = Depends(get_session)):
 
 def _app_to_out(session: Session, app: Application) -> ApplicationOut:
     job = session.get(Job, app.job_id)
+    company = (
+        session.get(Company, job.company_id) if job and job.company_id else None
+    )
     return ApplicationOut(
         id=app.id,
         job_id=app.job_id,
@@ -195,7 +244,7 @@ def _app_to_out(session: Session, app: Application) -> ApplicationOut:
         applied_at=app.applied_at,
         last_stage_change_at=app.last_stage_change_at,
         notes=app.notes,
-        job=_job_to_out(job, app) if job else None,
+        job=_job_to_out(job, app, company) if job else None,
     )
 
 
@@ -264,20 +313,40 @@ def create_company(body: CompanyIn, session: Session = Depends(get_session)):
 
 @router.patch("/companies/{company_id}", response_model=CompanyOut)
 def update_company(
-    company_id: int, body: CompanyIn, session: Session = Depends(get_session)
+    company_id: int, body: CompanyPatchIn, session: Session = Depends(get_session)
 ):
+    """Partial update — only the fields actually sent are touched."""
     company = session.get(Company, company_id)
     if company is None:
         raise HTTPException(404, "company not found")
-    company.name = body.name
-    company.email_domains = body.email_domains
-    company.career_page_url = body.career_page_url
-    company.sector = body.sector
-    company.notes = body.notes
+    if body.name is not None and body.name.strip():
+        company.name = body.name.strip()
+    if body.email_domains is not None:
+        company.email_domains = body.email_domains.strip()
+    if body.career_page_url is not None:
+        company.career_page_url = body.career_page_url
+    if body.sector is not None:
+        company.sector = body.sector
+    if body.notes is not None:
+        company.notes = body.notes
     session.add(company)
     session.commit()
     session.refresh(company)
     return company
+
+
+# --- gmail ----------------------------------------------------------------------------
+
+@router.get("/gmail/status", response_model=GmailStatusOut)
+def gmail_status():
+    """Read-only probe so the UI can stop prompting once Gmail is authorized.
+
+    Deliberately separate from ``/admin/poll-gmail``, which is side-effecting — checking
+    connectivity shouldn't consume mail.
+    """
+    from ..gmail.oauth import is_connected
+
+    return GmailStatusOut(connected=is_connected())
 
 
 # --- admin / manual triggers ----------------------------------------------------------

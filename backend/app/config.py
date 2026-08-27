@@ -47,9 +47,24 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
 
     @property
+    def sqlite_path(self) -> Path:
+        """Local SQLite file, preferring the current name but honouring the legacy one.
+
+        The app was renamed JobTrack SG -> AppsTracker. SQLite creates a missing file
+        silently, so a bare rename would look like "all my applications vanished" rather
+        than an error. Existing installs keep using ``jobtrack.sqlite`` until it's renamed;
+        fresh ones get ``appstracker.sqlite``.
+        """
+        current = BACKEND_DIR / "appstracker.sqlite"
+        legacy = BACKEND_DIR / "jobtrack.sqlite"
+        if not current.exists() and legacy.exists():
+            return legacy
+        return current
+
+    @property
     def resolved_database_url(self) -> str:
         if not self.database_url:
-            return f"sqlite:///{(BACKEND_DIR / 'jobtrack.sqlite').as_posix()}"
+            return f"sqlite:///{self.sqlite_path.as_posix()}"
         url = self.database_url
         # Managed Postgres (Render/Railway/Heroku) hands out postgres:// or
         # postgresql:// URLs; SQLAlchemy + psycopg3 needs the +psycopg driver suffix.
