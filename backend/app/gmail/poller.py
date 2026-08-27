@@ -385,7 +385,8 @@ def poll_once() -> dict[str, Any]:
             set_setting(session, HISTORY_KEY, str(profile.get("historyId")))
             return {"status": "reinitialized"}
 
-        notifications: list[Notification] = []
+        # (id, payload) not ORM rows: the commit below expires session instances.
+        notifications: list[tuple[int, str]] = []
         skipped = 0
         for mid in message_ids:
             try:
@@ -418,7 +419,7 @@ def poll_once() -> dict[str, Any]:
                 continue
             note = process_message(session, parsed)
             if note:
-                notifications.append(note)
+                notifications.append((note.id, note.payload))
 
         if not settings.gmail_dry_run:
             set_setting(session, HISTORY_KEY, str(new_history))
@@ -451,7 +452,8 @@ def scan_recent(days: int = 30, limit: int = 400) -> dict[str, Any]:
         f"newer_than:{days}d "
         "subject:(application OR applying OR applied OR candidature)"
     )
-    notifications: list[Notification] = []
+    # (id, payload) not ORM rows -- see _deliver.
+    notifications: list[tuple[int, str]] = []
     scanned = skipped = 0
 
     with session_scope() as session:
@@ -486,7 +488,7 @@ def scan_recent(days: int = 30, limit: int = 400) -> dict[str, Any]:
                 scanned += 1
                 note = process_message(session, _parse_api_message(msg))
                 if note:
-                    notifications.append(note)
+                    notifications.append((note.id, note.payload))
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
@@ -501,16 +503,23 @@ def scan_recent(days: int = 30, limit: int = 400) -> dict[str, Any]:
     }
 
 
-def _deliver(notifications: list[Notification]) -> int:
+def _deliver(notifications: list[tuple[int, str]]) -> int:
+    """Send queued notifications. Takes (id, payload) pairs, never ORM instances.
+
+    The caller's session has usually committed since these rows were created, and a commit
+    expires every object in the session; reading ``note.payload`` after the session closed
+    raised DetachedInstanceError and failed the whole poll — silently, because it only
+    happened on polls that actually produced a notification.
+    """
     if not notifications:
         return 0
     from ..telegram.notify import send_notification
 
     delivered = 0
     with session_scope() as session:
-        for note in notifications:
-            if send_notification(note.payload):
-                db_note = session.get(Notification, note.id)
+        for note_id, payload in notifications:
+            if send_notification(payload):
+                db_note = session.get(Notification, note_id)
                 if db_note:
                     db_note.telegram_delivered = True
                     session.add(db_note)
