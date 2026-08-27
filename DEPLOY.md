@@ -149,7 +149,12 @@ sudo chown -R appstracker:appstracker /opt/appstracker
 sudo -u appstracker git -C /opt/appstracker remote set-url origin <new-url>
 sudo -u appstracker git -C /opt/appstracker pull --ff-only
 
-# 4. install the new unit and start
+# 4. drop the venv — it hardcodes the OLD absolute path in every script's shebang, so
+#    after the mv `.venv/bin/pip` dies with "cannot execute: required file not found"
+#    (that means the *interpreter* is gone, not pip). deploy.sh rebuilds it.
+sudo -u appstracker rm -rf /opt/appstracker/backend/.venv
+
+# 5. install the new unit and start
 sudo rm /etc/systemd/system/jobtrack.service
 sudo cp /opt/appstracker/deploy/appstracker.service /etc/systemd/system/appstracker.service
 sudo systemctl daemon-reload && sudo systemctl enable appstracker
