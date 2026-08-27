@@ -26,6 +26,33 @@ CONFIRMATION_PATTERNS = (
     "your application to",
 )
 
+# Transactional mail that arrives from a tracked company's domain but says nothing about
+# an application — portal logins, password resets, job alerts. Matching the domain is not
+# enough to make these interesting, and they otherwise fill the inbox and fire Telegram.
+NOISE_PATTERNS = (
+    "verification code",
+    "verify your email",
+    "verify your account",
+    "confirm your email",
+    "one-time password",
+    "one time passcode",
+    "security code",
+    "sign-in attempt",
+    "sign in attempt",
+    "new sign-in",
+    "login attempt",
+    "reset your password",
+    "password reset",
+    "password has been changed",
+    "your otp",
+    "two-factor",
+    "job alert",
+    "jobs you may",
+    "recommended jobs",
+    "new jobs matching",
+    "unsubscribe from job",
+)
+
 _EMAIL_RE = re.compile(r"[\w.+-]+@([\w-]+\.[\w.-]+)")
 
 
@@ -50,6 +77,16 @@ def domain_matches(sender_domain: str, company_domains: list[str]) -> bool:
 def looks_like_confirmation(subject: str, snippet: str) -> bool:
     text = f"{subject or ''} {snippet or ''}".lower()
     return any(p in text for p in CONFIRMATION_PATTERNS)
+
+
+def looks_like_noise(subject: str, snippet: str) -> bool:
+    """Transactional mail from a tracked domain that isn't about an application.
+
+    Callers must test ``looks_like_confirmation`` first: a genuine confirmation can also
+    ask you to verify your email address, and the confirmation reading has to win.
+    """
+    text = f"{subject or ''} {snippet or ''}".lower()
+    return any(p in text for p in NOISE_PATTERNS)
 
 
 # --- picking *which* application an email is about -------------------------------------

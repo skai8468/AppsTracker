@@ -94,6 +94,15 @@ export const api = {
     });
   },
 
+  // "Seen, not about any application" — leaves the inbox without setting a stage.
+  dismissEmail(id: number): Promise<EmailEvent> {
+    return req<EmailEvent>(`/email-events/${id}/dismiss`, { method: "POST" });
+  },
+
+  restoreEmail(id: number): Promise<EmailEvent> {
+    return req<EmailEvent>(`/email-events/${id}/restore`, { method: "POST" });
+  },
+
   listCompanies(): Promise<Company[]> {
     return req<Company[]>("/companies");
   },

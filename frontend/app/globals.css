@@ -353,6 +353,8 @@ button { font-family: inherit; }
 }
 .pill:active { background: var(--bg-fill-2); }
 .pill.danger { color: var(--red); }
+/* Dismissive action — present but visually quieter than the stage choices. */
+.pill.muted { color: var(--label-secondary); }
 
 .status {
   appearance: none;

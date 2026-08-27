@@ -133,6 +133,15 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
             payload=f"✅ Application confirmed at {company.name}\n{msg.subject}",
             ref_email_event_id=event.id,
         )
+    elif matchers.looks_like_noise(msg.subject, msg.snippet):
+        # Login codes, password resets and job alerts share the company's domain but say
+        # nothing about an application. File them read so they neither fill the inbox nor
+        # fire Telegram — still stored, so it can be re-classified if this guessed wrong.
+        event.is_read = True
+        session.add(event)
+        session.commit()
+        log.info("filed as unrelated: %s | %s", msg.from_addr, msg.subject)
+        return None
     else:
         session.add(event)
         session.commit()

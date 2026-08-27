@@ -320,6 +320,39 @@ def classify_email(
     return event
 
 
+@router.post("/email-events/{event_id}/dismiss", response_model=EmailEventOut)
+def dismiss_email(event_id: int, session: Session = Depends(get_session)):
+    """Mark an email as unrelated to any application, without touching a stage.
+
+    Mail from a tracked domain isn't necessarily about a job — portal login codes and job
+    alerts arrive from the same senders. Read + unclassified is the "seen, not relevant"
+    state, so it leaves the inbox without inventing a stage change.
+    """
+    event = session.get(EmailEvent, event_id)
+    if event is None:
+        raise HTTPException(404, "email event not found")
+    event.is_read = True
+    event.classified_stage = None
+    session.add(event)
+    session.commit()
+    session.refresh(event)
+    return event
+
+
+@router.post("/email-events/{event_id}/restore", response_model=EmailEventOut)
+def restore_email(event_id: int, session: Session = Depends(get_session)):
+    """Undo a dismissal (or an auto-filed one) and put the email back for classifying."""
+    event = session.get(EmailEvent, event_id)
+    if event is None:
+        raise HTTPException(404, "email event not found")
+    event.is_read = False
+    event.classified_stage = None
+    session.add(event)
+    session.commit()
+    session.refresh(event)
+    return event
+
+
 # --- companies ------------------------------------------------------------------------
 
 @router.get("/companies", response_model=list[CompanyOut])

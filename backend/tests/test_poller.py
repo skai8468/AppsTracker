@@ -125,6 +125,46 @@ def test_ambiguous_email_falls_back_to_most_recent(session):
     assert second.status == AppStatus.confirmed       # most recently touched
 
 
+# --- transactional noise from a tracked domain -----------------------------------------
+
+def test_login_code_from_tracked_domain_is_filed_not_notified(session):
+    """Portal login codes share the company's domain but aren't about an application."""
+    _company, _job, app = _seed(session)
+    note = process_message(session, _msg("Your verification code is 483920"))
+    session.refresh(app)
+    assert note is None                       # no Telegram ping
+    assert app.status == AppStatus.applied    # stage untouched
+
+
+def test_noise_email_is_still_stored_so_it_can_be_recovered(session):
+    from app.models import EmailEvent
+    from sqlmodel import select
+
+    _seed(session)
+    process_message(session, _msg("Reset your password", mid="pw"))
+    ev = session.exec(select(EmailEvent).where(EmailEvent.gmail_message_id == "pw")).first()
+    assert ev is not None                     # kept, not dropped
+    assert ev.is_read is True                 # filed under Unrelated
+    assert ev.classified_stage is None
+
+
+def test_confirmation_wins_over_noise_wording(session):
+    """A real confirmation that also asks you to verify your email must still confirm."""
+    _company, _job, app = _seed(session)
+    note = process_message(
+        session,
+        _msg("Thank you for applying — please verify your email to continue"),
+    )
+    session.refresh(app)
+    assert app.status == AppStatus.confirmed
+    assert note is not None and note.type == "confirmation"
+
+
+def test_job_alerts_do_not_reach_the_inbox_queue(session):
+    _seed(session)
+    assert process_message(session, _msg("New jobs matching your profile", mid="alert")) is None
+
+
 def test_duplicate_message_ignored(session):
     _seed(session)
     first = process_message(session, _msg("Application received", mid="dup"))

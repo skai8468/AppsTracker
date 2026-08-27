@@ -8,12 +8,15 @@ import { Nav, STAGE_LABEL } from "./ui";
 /** The stages worth one-tap classifying straight from an email. */
 const STAGES: AppStatus[] = ["confirmed", "interviewing", "offer", "rejected"];
 
+/** Read but unclassified = seen and judged not to be about an application. */
+const isUnrelated = (ev: EmailEvent) => ev.is_read && ev.classified_stage === null;
+
 export default function EmailInbox() {
   const [events, setEvents] = useState<EmailEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showUnrelated, setShowUnrelated] = useState(false);
 
   async function load() {
-    setLoading(true);
     try {
       setEvents(await api.listEmailEvents());
     } finally {
@@ -29,22 +32,70 @@ export default function EmailInbox() {
     load();
   }
 
+  async function dismiss(ev: EmailEvent) {
+    setEvents((prev) =>
+      prev.map((e) => (e.id === ev.id ? { ...e, is_read: true, classified_stage: null } : e))
+    );
+    await api.dismissEmail(ev.id);
+    load();
+  }
+
+  async function restore(ev: EmailEvent) {
+    await api.restoreEmail(ev.id);
+    load();
+  }
+
+  const unrelated = events.filter(isUnrelated);
+  const active = events.filter((e) => !isUnrelated(e));
+  const visible = showUnrelated ? unrelated : active;
+
   return (
     <>
-      <Nav title="Inbox" sub="Tap a stage to update the application" />
+      <Nav
+        title="Inbox"
+        sub={
+          unrelated.length
+            ? `${active.length} to review · ${unrelated.length} unrelated`
+            : "Tap a stage to update the application"
+        }
+        filters={
+          unrelated.length > 0 ? (
+            <div className="segmented">
+              <button
+                className={!showUnrelated ? "active" : ""}
+                onClick={() => setShowUnrelated(false)}
+              >
+                Inbox {active.length}
+              </button>
+              <button
+                className={showUnrelated ? "active" : ""}
+                onClick={() => setShowUnrelated(true)}
+              >
+                Unrelated {unrelated.length}
+              </button>
+            </div>
+          ) : null
+        }
+      />
 
       <div className="content">
         {loading ? (
           <div className="loading">Loading…</div>
-        ) : events.length === 0 ? (
+        ) : visible.length === 0 ? (
           <div className="empty">
-            No company emails yet.
-            <br />
-            This fills up as tracked companies reply.
+            {showUnrelated
+              ? "Nothing filed as unrelated."
+              : "No company emails to review."}
+            {!showUnrelated && (
+              <>
+                <br />
+                This fills up as tracked companies reply.
+              </>
+            )}
           </div>
         ) : (
           <div className="group">
-            {events.map((ev) => (
+            {visible.map((ev) => (
               <div className={`row mail ${ev.is_read ? "" : "unread"}`} key={ev.id}>
                 <div className="row-body">
                   <div className="row-title">{ev.subject || "(no subject)"}</div>
@@ -52,7 +103,15 @@ export default function EmailInbox() {
                     <span>{ev.from_addr}</span>
                   </div>
                   {ev.snippet && <div className="mail-snip">{ev.snippet}</div>}
-                  {ev.classified_stage ? (
+
+                  {isUnrelated(ev) ? (
+                    <div className="mail-actions">
+                      <span className="status status-static st-withdrawn">Unrelated</span>
+                      <button className="pill" onClick={() => restore(ev)}>
+                        Move back
+                      </button>
+                    </div>
+                  ) : ev.classified_stage ? (
                     <div className="mail-actions">
                       <span className={`status status-static st-${ev.classified_stage}`}>
                         {STAGE_LABEL[ev.classified_stage]}
@@ -61,14 +120,13 @@ export default function EmailInbox() {
                   ) : (
                     <div className="mail-actions">
                       {STAGES.map((s) => (
-                        <button
-                          key={s}
-                          className="pill"
-                          onClick={() => classify(ev, s)}
-                        >
+                        <button key={s} className="pill" onClick={() => classify(ev, s)}>
                           {STAGE_LABEL[s]}
                         </button>
                       ))}
+                      <button className="pill muted" onClick={() => dismiss(ev)}>
+                        Not related
+                      </button>
                     </div>
                   )}
                 </div>

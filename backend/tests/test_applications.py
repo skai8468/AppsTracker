@@ -224,3 +224,41 @@ def test_company_patch_preserves_unsent_fields(client):
     assert data["notes"] == "referral via Sam"
     assert data["sector"] == "finance"
     assert data["career_page_url"] == "https://acme.com/careers"
+
+
+# --- inbox: unrelated mail -------------------------------------------------------------
+
+def _make_event(client, subject="Your verification code"):
+    """Insert an email event directly; the poller isn't involved in this endpoint's job."""
+    from app.api.routes import get_session as _gs  # noqa: F401
+    from app.models import EmailEvent
+    from app.db import get_session
+
+    gen = client.app.dependency_overrides[get_session]()
+    session = next(gen)
+    ev = EmailEvent(gmail_message_id=subject, subject=subject, from_addr="no-reply@acme.com")
+    session.add(ev)
+    session.commit()
+    session.refresh(ev)
+    return ev.id
+
+
+def test_dismiss_marks_read_without_setting_a_stage(client):
+    eid = _make_event(client)
+    r = client.post(f"/email-events/{eid}/dismiss")
+    assert r.status_code == 200, r.text
+    assert r.json()["is_read"] is True
+    assert r.json()["classified_stage"] is None
+
+
+def test_restore_puts_it_back_for_classifying(client):
+    eid = _make_event(client, "Sign-in attempt")
+    client.post(f"/email-events/{eid}/dismiss")
+    r = client.post(f"/email-events/{eid}/restore")
+    assert r.status_code == 200, r.text
+    assert r.json()["is_read"] is False
+    assert r.json()["classified_stage"] is None
+
+
+def test_dismiss_unknown_event_404s(client):
+    assert client.post("/email-events/99999/dismiss").status_code == 404
