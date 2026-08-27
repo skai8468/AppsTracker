@@ -130,13 +130,4 @@ export const api = {
   gmailStatus(): Promise<{ connected: boolean }> {
     return req<{ connected: boolean }>("/gmail/status");
   },
-
-  // Retroactive sweep — the incremental poller only ever looks forward.
-  scanInbox(days = 30): Promise<{
-    status: string;
-    scanned?: number;
-    tracked?: number;
-  }> {
-    return req(`/admin/scan-inbox?days=${days}`, { method: "POST" });
-  },
 };

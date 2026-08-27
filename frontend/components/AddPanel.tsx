@@ -58,10 +58,7 @@ export default function AddPanel({ onAdded }: { onAdded?: () => void }) {
           </div>
         )}
         {mode === "application" ? (
-          <>
-            <AddApplication onAdded={onAdded} />
-            <ScanInbox onScanned={onAdded} />
-          </>
+          <AddApplication onAdded={onAdded} />
         ) : (
           <AddCompany />
         )}
@@ -229,49 +226,6 @@ function AddApplication({ onAdded }: { onAdded?: () => void }) {
       <button className="btn-primary" disabled={!canSave || saving} onClick={save}>
         {saving ? "Saving…" : done ? "Saved ✓" : "Save"}
       </button>
-    </>
-  );
-}
-
-// --- retroactive sweep of already-received confirmations ------------------------------
-
-function ScanInbox({ onScanned }: { onScanned?: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-
-  async function scan() {
-    if (busy) return;
-    setBusy(true);
-    setResult(null);
-    try {
-      const r = await api.scanInbox(30);
-      if (r.status !== "ok") {
-        setResult("Gmail isn't connected yet.");
-      } else if (r.tracked) {
-        setResult(`Tracked ${r.tracked} application${r.tracked === 1 ? "" : "s"}.`);
-        onScanned?.();
-      } else {
-        setResult(`Checked ${r.scanned ?? 0} emails — nothing new to add.`);
-      }
-    } catch {
-      setResult("Scan failed — please try again.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <>
-      <div className="group-label" style={{ marginTop: 26 }}>
-        Already applied?
-      </div>
-      <button className="btn-secondary" disabled={busy} onClick={scan}>
-        {busy ? "Scanning…" : "Scan last 30 days of email"}
-      </button>
-      <p className="sheet-sub" style={{ marginTop: 10 }}>
-        {result ??
-          "Finds confirmation emails you already received and adds those applications. New ones are picked up automatically."}
-      </p>
     </>
   );
 }
