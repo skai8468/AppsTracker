@@ -181,6 +181,46 @@ def update_application(
     return _app_to_out(session, app)
 
 
+def _relink_company(
+    session: Session, job: Job, new_name: str, sector, email_domains: Optional[str]
+) -> Optional[Company]:
+    """Point ``job`` at the company called ``new_name``, without duplicating or orphaning.
+
+    Editing the company on an application means two different things depending on context,
+    and guessing wrong leaves rows that still match Gmail but own no applications:
+
+    * the name is a typo to correct  -> rename the existing company in place
+    * the job is really at another employer -> move it to that company
+
+    Resolution order: an existing company with the new slug wins; otherwise, if this job is
+    the only one at its current company, treat it as a correction and rename in place
+    (keeping the domains); otherwise create a new company for the move.
+    """
+    new_name = new_name.strip()
+    slug = slugify(new_name)
+    current = session.get(Company, job.company_id) if job.company_id else None
+
+    existing = session.exec(select(Company).where(Company.slug == slug)).first()
+    if existing is not None:
+        return existing
+
+    if current is not None:
+        siblings = session.exec(
+            select(Job).where(Job.company_id == current.id, Job.id != job.id)
+        ).first()
+        if siblings is None:
+            # Sole job at this company: a rename here is a correction, so keep the row
+            # (and its domains) and just fix the name/slug.
+            current.name = new_name
+            current.slug = slug
+            if sector is not None:
+                current.sector = sector
+            session.add(current)
+            return current
+
+    return _get_or_create_company(session, new_name, sector or job.sector, email_domains)
+
+
 def _update_joined_job(
     session: Session, app: Application, body: ApplicationUpdateIn
 ) -> None:
@@ -196,11 +236,7 @@ def _update_joined_job(
     if body.sector is not None:
         job.sector = body.sector
     if body.company is not None and body.company.strip():
-        # Renaming the employer re-points the job at that company (creating it if new), so
-        # Gmail matching follows the rename instead of staying on the old row.
-        company = _get_or_create_company(
-            session, body.company, body.sector or job.sector, body.email_domains
-        )
+        company = _relink_company(session, job, body.company, body.sector, body.email_domains)
         job.company_name = body.company.strip()
         job.company_id = company.id if company else None
     session.add(job)
@@ -321,6 +357,17 @@ def update_company(
         raise HTTPException(404, "company not found")
     if body.name is not None and body.name.strip():
         company.name = body.name.strip()
+        # The slug must follow the name: _get_or_create_company looks companies up by
+        # slug, so a stale one makes the next job at this employer create a duplicate
+        # company with no email domains — silently unmatchable by the Gmail poller.
+        new_slug = slugify(company.name)
+        if new_slug != company.slug:
+            clash = session.exec(
+                select(Company).where(Company.slug == new_slug, Company.id != company.id)
+            ).first()
+            if clash is not None:
+                raise HTTPException(409, f"'{clash.name}' already uses that name")
+            company.slug = new_slug
     if body.email_domains is not None:
         company.email_domains = body.email_domains.strip()
     if body.career_page_url is not None:

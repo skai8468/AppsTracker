@@ -379,8 +379,12 @@ function EditCompany({
         email_domains: domains.trim(),
       });
       onSaved();
-    } catch {
-      alert("Couldn't save — please try again.");
+    } catch (e: any) {
+      alert(
+        String(e?.message || "").includes("409")
+          ? "Another tracked company already uses that name."
+          : "Couldn't save — please try again."
+      );
     } finally {
       setSaving(false);
     }

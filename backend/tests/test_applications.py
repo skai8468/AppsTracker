@@ -102,9 +102,11 @@ def test_editing_job_fields_from_detail_view(client):
     assert job["sector"] == "finance"
 
 
-def test_renaming_company_from_detail_view_repoints_the_job(client):
-    """Fixing a mis-parsed name ("Goldman Sach") must move the job to the right company,
-    carrying the domains over, or Gmail would keep matching against the old row."""
+def test_renaming_company_from_detail_view_corrects_in_place(client):
+    """Fixing a mis-parsed name ("Goldman Sach") on the only job at that company is a
+    correction: rename the row, keep its domains, and leave no orphan behind. An orphan
+    would still match the domain in the poller while owning no application, so a
+    confirmation email would stop auto-confirming."""
     created = client.post(
         "/applications", json={**PAYLOAD, "company": "Acme", "email_domains": "acme.com"}
     ).json()
@@ -117,8 +119,46 @@ def test_renaming_company_from_detail_view_repoints_the_job(client):
     assert r.status_code == 200, r.text
     job = r.json()["job"]
     assert job["company_name"] == "Acme Corp"
-    assert job["company_id"] != old_company_id      # re-pointed, not renamed in place
+    assert job["company_id"] == old_company_id      # renamed in place, not duplicated
     assert job["company_email_domains"] == "acme.com"
+    assert [c["name"] for c in client.get("/companies").json()] == ["Acme Corp"]
+
+
+def test_moving_a_job_to_an_existing_company_reuses_it(client):
+    client.post("/companies", json={"name": "Beta Corp", "email_domains": "beta.com"})
+    created = client.post("/applications", json=PAYLOAD).json()
+
+    r = client.patch(f"/applications/{created['id']}", json={"company": "Beta Corp"})
+    assert r.status_code == 200, r.text
+    assert r.json()["job"]["company_email_domains"] == "beta.com"
+    names = sorted(c["name"] for c in client.get("/companies").json())
+    assert names == ["Acme", "Beta Corp"]           # reused, not a third row
+
+
+def test_company_rename_updates_slug_so_later_adds_reuse_it(client):
+    """The slug drives find-or-create. Leaving it stale made the next job at the same
+    employer create a duplicate company with no domains."""
+    client.post(
+        "/applications",
+        json={**PAYLOAD, "company": "Goldman Sach", "email_domains": "gs.com"},
+    )
+    cid = client.get("/companies").json()[0]["id"]
+    assert client.patch(f"/companies/{cid}", json={"name": "Goldman Sachs"}).status_code == 200
+
+    client.post("/applications", json={
+        "url": "https://higher.gs.com/roles/2", "title": "Associate",
+        "company": "Goldman Sachs",
+    })
+    companies = client.get("/companies").json()
+    assert len(companies) == 1, companies
+    assert companies[0]["slug"] == "goldman-sachs"
+    assert companies[0]["email_domains"] == "gs.com"
+
+
+def test_company_rename_onto_an_existing_name_conflicts(client):
+    a = client.post("/companies", json={"name": "Acme"}).json()
+    client.post("/companies", json={"name": "Beta"})
+    assert client.patch(f"/companies/{a['id']}", json={"name": "Beta"}).status_code == 409
 
 
 def test_company_name_patch_leaves_domains_alone(client):
