@@ -155,6 +155,25 @@ def test_company_rename_updates_slug_so_later_adds_reuse_it(client):
     assert companies[0]["email_domains"] == "gs.com"
 
 
+def test_delete_unused_company(client):
+    c = client.post("/companies", json={"name": "Stale Co"}).json()
+    assert client.delete(f"/companies/{c['id']}").status_code == 204
+    assert client.get("/companies").json() == []
+
+
+def test_delete_company_refuses_while_applications_depend_on_it(client):
+    created = client.post("/applications", json=PAYLOAD).json()
+    cid = created["job"]["company_id"]
+
+    r = client.delete(f"/companies/{cid}")
+    assert r.status_code == 409, r.text
+    assert client.get("/companies").json()          # still there
+
+    # Once the application is gone the company can be removed.
+    client.delete(f"/applications/{created['id']}")
+    assert client.delete(f"/companies/{cid}").status_code == 204
+
+
 def test_company_rename_onto_an_existing_name_conflicts(client):
     a = client.post("/companies", json={"name": "Acme"}).json()
     client.post("/companies", json={"name": "Beta"})

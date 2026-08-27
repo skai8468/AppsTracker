@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type { AppStatus, Sector } from "@/lib/types";
 
 /** Pipeline stages shown as grouped-list sections, in order. "interested" = Saved. */
@@ -164,6 +164,8 @@ export function Sheet({
   leading?: ReactNode;
   children: ReactNode;
 }) {
+  const sheetRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -179,11 +181,41 @@ export function Sheet({
     };
   }, [open, onClose]);
 
+  // Lift the sheet above the on-screen keyboard. iOS doesn't resize the layout viewport
+  // when the keyboard opens, so a bottom-anchored sheet ends up underneath it; the
+  // visual viewport is the only thing that reports the covered height.
+  useEffect(() => {
+    if (!open) return;
+    const vv = window.visualViewport;
+    const el = sheetRef.current;
+    if (!vv || !el) return;
+
+    const fit = () => {
+      const covered = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      el.style.transform = covered ? `translateY(-${covered}px)` : "";
+      // Shrink to match, or the top of the sheet is pushed off-screen.
+      el.style.maxHeight = covered ? `calc(88vh - ${covered}px)` : "";
+      if (covered) {
+        document.activeElement?.scrollIntoView?.({ block: "nearest" });
+      }
+    };
+    vv.addEventListener("resize", fit);
+    vv.addEventListener("scroll", fit);
+    fit();
+    return () => {
+      vv.removeEventListener("resize", fit);
+      vv.removeEventListener("scroll", fit);
+      el.style.transform = "";
+      el.style.maxHeight = "";
+    };
+  }, [open]);
+
   if (!open) return null;
   return (
     <div className="scrim" onClick={onClose}>
       <div
         className="sheet"
+        ref={sheetRef}
         role="dialog"
         aria-modal="true"
         aria-label={title}

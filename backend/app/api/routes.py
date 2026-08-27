@@ -382,6 +382,40 @@ def update_company(
     return company
 
 
+@router.delete("/companies/{company_id}", status_code=204)
+def delete_company(company_id: int, session: Session = Depends(get_session)):
+    """Remove a tracked company. Refuses while applications still depend on it.
+
+    Deleting a company that still owns applications would strand them with a dangling
+    company_id and silently stop Gmail matching for those roles, so the caller has to
+    remove the applications first — an explicit 409 beats a quiet breakage.
+    """
+    company = session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(404, "company not found")
+
+    in_use = session.exec(
+        select(Application)
+        .join(Job, Job.id == Application.job_id)
+        .where(Job.company_id == company_id)
+    ).first()
+    if in_use is not None:
+        raise HTTPException(409, "still used by tracked applications")
+
+    # Detach anything else pointing here so no dangling references are left behind.
+    for job in session.exec(select(Job).where(Job.company_id == company_id)).all():
+        job.company_id = None
+        session.add(job)
+    for ev in session.exec(
+        select(EmailEvent).where(EmailEvent.matched_company_id == company_id)
+    ).all():
+        ev.matched_company_id = None
+        session.add(ev)
+
+    session.delete(company)
+    session.commit()
+
+
 # --- gmail ----------------------------------------------------------------------------
 
 @router.get("/gmail/status", response_model=GmailStatusOut)

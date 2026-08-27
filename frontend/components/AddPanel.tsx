@@ -390,6 +390,24 @@ function EditCompany({
     }
   }
 
+  async function remove() {
+    if (!company || saving) return;
+    if (!confirm(`Delete "${company.name}" from tracked companies?`)) return;
+    setSaving(true);
+    try {
+      await api.deleteCompany(company.id);
+      onSaved();
+    } catch (e: any) {
+      alert(
+        String(e?.message || "").includes("409")
+          ? "You're still tracking applications at this company. Remove those first."
+          : "Couldn't delete — please try again."
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <Sheet open onClose={onClose} title={company.name}>
       <div className="group-label">Company</div>
@@ -419,6 +437,10 @@ function EditCompany({
       </p>
       <button className="btn-primary" disabled={saving || !dirty || !name.trim()} onClick={save}>
         {saving ? "Saving…" : "Save"}
+      </button>
+
+      <button className="btn-danger" onClick={remove}>
+        Delete company
       </button>
     </Sheet>
   );

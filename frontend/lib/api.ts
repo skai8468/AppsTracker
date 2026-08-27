@@ -113,6 +113,11 @@ export const api = {
     });
   },
 
+  // 409 if applications still reference the company.
+  deleteCompany(id: number): Promise<void> {
+    return req<void>(`/companies/${id}`, { method: "DELETE" });
+  },
+
   gmailStatus(): Promise<{ connected: boolean }> {
     return req<{ connected: boolean }>("/gmail/status");
   },
