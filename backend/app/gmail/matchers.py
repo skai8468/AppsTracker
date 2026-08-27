@@ -56,6 +56,20 @@ NOISE_PATTERNS = (
     "unsubscribe from job",
 )
 
+# Applicant-tracking platforms that send on behalf of many employers. EY mails from
+# yello.co and Goldman from oracle.com — neither is the employer's own domain, so storing
+# one as a company's tracked domain would make the NEXT employer using that platform match
+# the wrong company. Senders here are identified by display name instead.
+ATS_DOMAINS = frozenset({
+    "yello.co", "greenhouse.io", "lever.co", "ashbyhq.com", "workable.com",
+    "smartrecruiters.com", "jobvite.com", "icims.com", "taleo.net", "brassring.com",
+    "kenexa.com", "avature.net", "recruitee.com", "teamtailor.com", "breezy.hr",
+    "bamboohr.com", "personio.de", "eightfold.ai", "phenompeople.com", "radancy.com",
+    "symphonytalent.com", "successfactors.com", "successfactors.eu", "myworkday.com",
+    "myworkdayjobs.com", "workday.com", "oracle.com", "oraclecloud.com", "ultipro.com",
+    "silkroad.com", "applytojob.com", "hire.lever.co", "jobs.workable.com",
+})
+
 _EMAIL_RE = re.compile(r"[\w.+-]+@([\w-]+\.[\w.-]+)")
 
 
@@ -63,6 +77,17 @@ def extract_domain(from_header: str) -> str | None:
     """Pull the domain out of a From header like 'Careers <no-reply@dbs.com>'."""
     m = _EMAIL_RE.search(from_header or "")
     return m.group(1).lower() if m else None
+
+
+def is_ats_domain(domain: str) -> bool:
+    """True if the domain belongs to a shared recruiting platform, not one employer."""
+    d = (domain or "").lower().strip()
+    if not d:
+        return False
+    if d in ATS_DOMAINS:
+        return True
+    # Subdomains too: "mail.yello.co", "e.greenhouse.io".
+    return any(d.endswith("." + ats) for ats in ATS_DOMAINS)
 
 
 def domain_matches(sender_domain: str, company_domains: list[str]) -> bool:
@@ -155,12 +180,20 @@ _TITLE_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Function-mailbox words that aren't part of the employer's name.
+# Function-mailbox words that aren't part of the employer's name. This does the real work
+# for shared-ATS senders, where the display name is all we have to identify the employer:
+# "EY Talent Attraction and Acquisition Team" has to reduce to "EY".
 _SENDER_NOISE_RE = re.compile(
-    r"\b(?:recruit(?:ing|ment)?|careers?|talent(?:\s+acquisition)?|hiring|jobs?|hr|people"
-    r"|no[\s-]?reply|do[\s-]?not[\s-]?reply|notifications?|team|via|support|mailer|info)\b",
+    r"\b(?:recruit(?:ing|ment|er)?|careers?|talent|attraction|acquisition|hiring|hire"
+    r"|jobs?|hr|people|campus|university\s+relations|early\s+careers?|graduate\s+programme"
+    r"|no[\s-]?reply|do[\s-]?not[\s-]?reply|noreply|notifications?|team|via|support"
+    r"|mailer|info|admin|onboarding)\b",
     re.IGNORECASE,
 )
+
+# Left behind once the words above are removed: "EY and", "Acme &", "- Acme".
+_DANGLING_RE = re.compile(r"\s+(?:and|&|\+)\s+|^\s*(?:and|&|\+)\s+|\s+(?:and|&|\+)\s*$",
+                          re.IGNORECASE)
 
 _DISPLAY_NAME_RE = re.compile(r"^\s*\"?([^\"<]+?)\"?\s*<")
 
@@ -197,8 +230,9 @@ def company_from_sender(from_header: str, domain: str) -> str:
     """Employer name from the From display name, falling back to the domain."""
     m = _DISPLAY_NAME_RE.match(from_header or "")
     if m:
-        name = _SENDER_NOISE_RE.sub("", m.group(1))
-        name = re.sub(r"\s{2,}", " ", name).strip(" -|,·•")
+        name = _SENDER_NOISE_RE.sub(" ", m.group(1))
+        name = _DANGLING_RE.sub(" ", name)
+        name = re.sub(r"\s{2,}", " ", name).strip(" -|,·•&+")
         if len(name) > 1 and not _EMAIL_RE.search(name):
             return name
     # "careers.tiktok.com" -> "Tiktok": drop the public suffix and any leading label.

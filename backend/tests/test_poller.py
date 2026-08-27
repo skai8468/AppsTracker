@@ -200,6 +200,67 @@ def test_auto_tracking_can_be_switched_off(session, monkeypatch):
     assert _apps(session) == []
 
 
+# --- shared applicant-tracking platforms ------------------------------------------------
+
+def test_ats_domain_is_not_claimed_as_the_employers_domain(session):
+    """EY mails via yello.co. Saving that as EY's domain would hand the next Yello
+    employer's mail straight to EY."""
+    process_message(session, _msg(
+        "Thanks for applying at EY",
+        from_addr="EY Talent Attraction and Acquisition Team <eyglobal@yello.co>",
+    ))
+    from sqlmodel import select as _select
+    company = session.exec(_select(Company)).all()[-1]
+    assert company.name == "EY"              # display name cleaned down to the employer
+    assert company.email_domains == ""       # the platform's domain is not EY's
+
+
+def test_two_employers_on_one_platform_stay_separate(session):
+    process_message(session, _msg(
+        "Thanks for applying at EY", mid="ey",
+        from_addr="EY Careers <noreply@yello.co>"))
+    process_message(session, _msg(
+        "Thank you for applying to Data Analyst", mid="acme",
+        from_addr="Acme Talent Team <noreply@yello.co>"))
+
+    from sqlmodel import select as _select
+    names = sorted(c.name for c in session.exec(_select(Company)).all())
+    assert names == ["Acme", "EY"]           # not both filed under EY
+    assert len(session.exec(_select(Application)).all()) == 2
+
+
+def test_repeat_mail_via_a_platform_finds_the_same_company(session):
+    process_message(session, _msg(
+        "Thanks for applying at EY", mid="one",
+        from_addr="EY Talent Attraction and Acquisition Team <eyglobal@yello.co>"))
+    process_message(session, _msg(
+        "Thank you for applying to Audit Associate", mid="two",
+        from_addr="EY <eyglobal@yello.co>"))
+
+    from sqlmodel import select as _select
+    assert [c.name for c in session.exec(_select(Company)).all()] == ["EY"]
+    assert len(session.exec(_select(Application)).all()) == 2   # two roles, one company
+
+
+def test_ats_domain_saved_against_a_company_is_ignored_when_matching(session):
+    """Legacy data: an ATS domain stored before this rule must not match other employers."""
+    stale = Company(name="Old Co", slug="old-co", email_domains="oracle.com")
+    session.add(stale)
+    session.commit()
+
+    process_message(session, _msg(
+        "Thank you for applying to Analyst",
+        from_addr="Different Employer <noreply@oracle.com>"))
+
+    from sqlmodel import select as _select
+    names = sorted(c.name for c in session.exec(_select(Company)).all())
+    assert "Different Employer" in names      # not filed under Old Co
+    apps = session.exec(_select(Application)).all()
+    assert len(apps) == 1
+    job = session.get(Job, apps[0].job_id)
+    assert job.company_name == "Different Employer"
+
+
 # --- transactional noise from a tracked domain -----------------------------------------
 
 def test_login_code_from_tracked_domain_is_filed_not_notified(session):

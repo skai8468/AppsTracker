@@ -104,7 +104,7 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
     is_confirmation = matchers.looks_like_confirmation(msg.subject, msg.snippet)
     is_noise = matchers.looks_like_noise(msg.subject, msg.snippet)
 
-    company = _match_company(session, domain)
+    company = _match_company(session, domain, msg)
     created_from_email = False
 
     if company is None:
@@ -190,14 +190,17 @@ def _company_from_email(session: Session, msg: ParsedMessage, domain: str) -> Co
     """
     name = matchers.company_from_sender(msg.from_addr, domain)
     slug = slugify(name)
+    # A shared platform's domain is never the employer's, so don't claim it for them.
+    tracked_domain = "" if matchers.is_ats_domain(domain) else domain
+
     existing = session.exec(select(Company).where(Company.slug == slug)).first()
     if existing is not None:
-        if not existing.email_domains:
-            existing.email_domains = domain
+        if tracked_domain and not existing.email_domains:
+            existing.email_domains = tracked_domain
             session.add(existing)
             session.commit()
         return existing
-    company = Company(name=name, slug=slug, email_domains=domain)
+    company = Company(name=name, slug=slug, email_domains=tracked_domain)
     session.add(company)
     session.commit()
     session.refresh(company)
@@ -262,9 +265,29 @@ def _names_an_untracked_role(
     return True
 
 
-def _match_company(session: Session, domain: str) -> Optional[Company]:
+def _match_company(
+    session: Session, domain: str, msg: Optional[ParsedMessage] = None
+) -> Optional[Company]:
+    """Find the tracked company an email belongs to.
+
+    Shared recruiting platforms (Yello, Greenhouse, Workday, Oracle) send for many
+    employers, so their domain identifies the platform, not the company. Matching those by
+    domain would hand the next employer's mail to whoever was tracked first, so they're
+    resolved by the sender's display name instead. This also neutralises an ATS domain
+    already saved against a company before this rule existed.
+    """
+    if matchers.is_ats_domain(domain):
+        if msg is None:
+            return None
+        name = matchers.company_from_sender(msg.from_addr, domain)
+        return session.exec(
+            select(Company).where(Company.slug == slugify(name))
+        ).first()
+
     for company in session.exec(select(Company)).all():
-        if matchers.domain_matches(domain, company.domain_list()):
+        # Skip any ATS domain saved against a company; it isn't theirs to claim.
+        owned = [d for d in company.domain_list() if not matchers.is_ats_domain(d)]
+        if matchers.domain_matches(domain, owned):
             return company
     return None
 
