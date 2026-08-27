@@ -10,7 +10,7 @@ import { Icon } from "@/components/ui";
 type Tab = "applications" | "inbox" | "add";
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
-  { key: "applications", label: "Applications", icon: "list" },
+  { key: "applications", label: "Apps", icon: "list" },
   { key: "inbox", label: "Inbox", icon: "mail" },
   { key: "add", label: "Add", icon: "plus" },
 ];

@@ -356,20 +356,28 @@ function EditCompany({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const [name, setName] = useState("");
   const [domains, setDomains] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    setName(company?.name || "");
     setDomains(company?.email_domains || "");
   }, [company?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!company) return null;
 
+  const dirty =
+    name.trim() !== company.name || domains.trim() !== (company.email_domains || "");
+
   async function save() {
-    if (!company || saving) return;
+    if (!company || saving || !name.trim()) return;
     setSaving(true);
     try {
-      await api.updateCompany(company.id, { email_domains: domains.trim() });
+      await api.updateCompany(company.id, {
+        name: name.trim(),
+        email_domains: domains.trim(),
+      });
       onSaved();
     } catch {
       alert("Couldn't save — please try again.");
@@ -380,11 +388,20 @@ function EditCompany({
 
   return (
     <Sheet open onClose={onClose} title={company.name}>
-      <div className="group-label">Email domains</div>
+      <div className="group-label">Company</div>
       <div className="field-group">
         <div className="field">
+          <span className="field-label">Name</span>
           <input
-            placeholder="dbs.com, dbs.com.sg"
+            placeholder="e.g. Goldman Sachs"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <span className="field-label">Domains</span>
+          <input
+            placeholder="gs.com, oracle.com"
             value={domains}
             autoFocus
             onChange={(e) => setDomains(e.target.value)}
@@ -392,14 +409,11 @@ function EditCompany({
         </div>
       </div>
       <p className="sheet-sub">
-        Comma-separated. Any email from these domains is matched to this company, and a
-        confirmation flips the matching application automatically.
+        Domains are comma-separated, and subdomains count too — <code>oracle.com</code>{" "}
+        also matches mail from <code>notification.oracle.com</code>. Any email from them is
+        matched to this company, and a confirmation flips the application automatically.
       </p>
-      <button
-        className="btn-primary"
-        disabled={saving || domains.trim() === (company.email_domains || "")}
-        onClick={save}
-      >
+      <button className="btn-primary" disabled={saving || !dirty || !name.trim()} onClick={save}>
         {saving ? "Saving…" : "Save"}
       </button>
     </Sheet>

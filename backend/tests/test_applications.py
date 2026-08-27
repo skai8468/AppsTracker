@@ -102,6 +102,35 @@ def test_editing_job_fields_from_detail_view(client):
     assert job["sector"] == "finance"
 
 
+def test_renaming_company_from_detail_view_repoints_the_job(client):
+    """Fixing a mis-parsed name ("Goldman Sach") must move the job to the right company,
+    carrying the domains over, or Gmail would keep matching against the old row."""
+    created = client.post(
+        "/applications", json={**PAYLOAD, "company": "Acme", "email_domains": "acme.com"}
+    ).json()
+    old_company_id = created["job"]["company_id"]
+
+    r = client.patch(
+        f"/applications/{created['id']}",
+        json={"company": "Acme Corp", "email_domains": "acme.com"},
+    )
+    assert r.status_code == 200, r.text
+    job = r.json()["job"]
+    assert job["company_name"] == "Acme Corp"
+    assert job["company_id"] != old_company_id      # re-pointed, not renamed in place
+    assert job["company_email_domains"] == "acme.com"
+
+
+def test_company_name_patch_leaves_domains_alone(client):
+    company = client.post(
+        "/companies", json={"name": "Goldman Sach", "email_domains": "gs.com,oracle.com"}
+    ).json()
+    r = client.patch(f"/companies/{company['id']}", json={"name": "Goldman Sachs"})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "Goldman Sachs"
+    assert r.json()["email_domains"] == "gs.com,oracle.com"
+
+
 def test_editing_email_domains_overwrites_existing(client):
     """Add-by-link only backfills empty domains; an explicit edit must be able to correct."""
     created = client.post(

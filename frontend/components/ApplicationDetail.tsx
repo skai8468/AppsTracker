@@ -17,6 +17,8 @@ import {
 interface Draft {
   status: AppStatus;
   appliedAt: string; // YYYY-MM-DD for <input type="date">
+  title: string;
+  company: string;
   applyUrl: string;
   domains: string;
   notes: string;
@@ -26,6 +28,8 @@ function draftFrom(app: Application): Draft {
   return {
     status: app.status,
     appliedAt: toDateInput(app.applied_at),
+    title: app.job?.title || "",
+    company: app.job?.company_name || "",
     applyUrl: app.job?.apply_url || "",
     domains: app.job?.company_email_domains || "",
     notes: app.notes || "",
@@ -61,6 +65,8 @@ export default function ApplicationDetail({
   const dirty =
     draft.status !== app.status ||
     draft.appliedAt !== toDateInput(app.applied_at) ||
+    draft.title !== (app.job?.title || "") ||
+    draft.company !== (app.job?.company_name || "") ||
     draft.applyUrl !== (app.job?.apply_url || "") ||
     draft.domains !== (app.job?.company_email_domains || "") ||
     draft.notes !== (app.notes || "");
@@ -72,6 +78,8 @@ export default function ApplicationDetail({
       await api.updateApplication(app.id, {
         status: draft.status,
         applied_at: fromDateInput(draft.appliedAt),
+        title: draft.title.trim() || undefined,
+        company: draft.company.trim() || undefined,
         apply_url: draft.applyUrl.trim() || undefined,
         email_domains: draft.domains.trim(),
         notes: draft.notes,
@@ -151,6 +159,22 @@ export default function ApplicationDetail({
 
       <div className="group-label">Details</div>
       <div className="field-group">
+        <div className="field">
+          <span className="field-label">Title</span>
+          <input
+            placeholder="Role title"
+            value={draft.title}
+            onChange={(e) => set("title", e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <span className="field-label">Company</span>
+          <input
+            placeholder="Company"
+            value={draft.company}
+            onChange={(e) => set("company", e.target.value)}
+          />
+        </div>
         <div className="field">
           <span className="field-label">Posting</span>
           <input
