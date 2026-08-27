@@ -125,6 +125,81 @@ def test_ambiguous_email_falls_back_to_most_recent(session):
     assert second.status == AppStatus.confirmed       # most recently touched
 
 
+# --- creating applications straight from confirmation emails ---------------------------
+
+def _apps(session):
+    from sqlmodel import select as _select
+    return session.exec(_select(Application)).all()
+
+
+def test_confirmation_from_untracked_sender_creates_the_application(session):
+    """The whole point: applying somewhere new shouldn't need typing it in afterwards."""
+    note = process_message(session, _msg(
+        "Thank you for applying to Data Analyst, Growth",
+        from_addr="Monee Recruitment <talent@monee.com>",
+    ))
+    apps = _apps(session)
+    assert len(apps) == 1
+    assert apps[0].status == AppStatus.confirmed
+
+    job = session.get(Job, apps[0].job_id)
+    assert job.title == "Data Analyst, Growth"
+    assert job.company_name == "Monee"
+    assert job.source == "email"
+
+    company = session.get(Company, job.company_id)
+    assert company.email_domains == "monee.com"   # tracked from here on, no manual step
+    assert note is not None and "New application tracked" in note.payload
+
+
+def test_confirmation_without_a_named_role_still_records_it(session):
+    """"Thank you for applying to Sea!" names no role — track it, don't drop it."""
+    process_message(session, _msg(
+        "Thank you for applying to Sea!", from_addr="Sea Careers <no-reply@sea.com>",
+    ))
+    apps = _apps(session)
+    assert len(apps) == 1
+    job = session.get(Job, apps[0].job_id)
+    assert job.company_name == "Sea"
+    assert job.title == "Role not specified"      # editable in the app
+
+
+def test_second_role_at_a_tracked_company_is_added_not_conflated(session):
+    """A confirmation for a role we don't track must not re-confirm a different one."""
+    _company, _job, existing = _seed(session)     # Acme, "Grad SWE"
+    process_message(session, _msg("Thank you for applying to Quantitative Risk Analyst"))
+
+    session.refresh(existing)
+    assert existing.status == AppStatus.applied   # untouched
+    titles = sorted(session.get(Job, a.job_id).title for a in _apps(session))
+    assert titles == ["Grad SWE", "Quantitative Risk Analyst"]
+
+
+def test_confirmation_for_a_tracked_role_confirms_rather_than_duplicating(session):
+    _company, _job, existing = _seed(session)     # "Grad SWE"
+    process_message(session, _msg("Thank you for applying to Grad SWE"))
+    session.refresh(existing)
+    assert existing.status == AppStatus.confirmed
+    assert len(_apps(session)) == 1               # no duplicate
+
+
+def test_untracked_noise_never_creates_an_application(session):
+    assert process_message(session, _msg(
+        "Your verification code is 1234", from_addr="Portal <no-reply@random-portal.com>",
+    )) is None
+    assert _apps(session) == []
+
+
+def test_auto_tracking_can_be_switched_off(session, monkeypatch):
+    from app.gmail import poller as p
+    monkeypatch.setattr(p.settings, "auto_track_from_email", False)
+    assert process_message(session, _msg(
+        "Thank you for applying to Data Analyst",
+        from_addr="Monee <talent@monee.com>",
+    )) is None
+    assert _apps(session) == []
+
+
 # --- transactional noise from a tracked domain -----------------------------------------
 
 def test_login_code_from_tracked_domain_is_filed_not_notified(session):

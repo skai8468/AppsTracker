@@ -470,3 +470,15 @@ def trigger_gmail_poll():
     from ..gmail.poller import poll_once
 
     return poll_once()
+
+
+@router.post("/admin/scan-inbox")
+def trigger_inbox_scan(days: int = 30):
+    """Sweep recent mail for confirmations the incremental poll never saw.
+
+    The poller only looks forward from its stored history id, so applications confirmed
+    before Gmail was connected (or while the poller was down) never get picked up.
+    """
+    from ..gmail.poller import scan_recent
+
+    return scan_recent(days=max(1, min(days, 365)))

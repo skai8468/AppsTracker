@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     gmail_credentials_file: str = "credentials.json"
     gmail_token_file: str = "token.json"
     gmail_dry_run: bool = False
+    # Create the application from a confirmation email when the sender isn't tracked yet,
+    # instead of requiring it to be added by hand first. Set false to only ever confirm
+    # applications you added yourself.
+    auto_track_from_email: bool = True
     # Prod: the authorized_user token.json contents, injected as a secret. On boot the
     # app materialises this to gmail_token_file, since the container disk is ephemeral.
     gmail_token_json: str = ""

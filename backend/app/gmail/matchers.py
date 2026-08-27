@@ -11,6 +11,7 @@ one-tap classify, because those emails are too free-form to auto-parse reliably.
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 # Subject/snippet phrases that strongly indicate "we received your application".
 CONFIRMATION_PATTERNS = (
@@ -24,6 +25,8 @@ CONFIRMATION_PATTERNS = (
     "received your submission",
     "thanks for applying",
     "your application to",
+    "your application for",
+    "application received",
 )
 
 # Transactional mail that arrives from a tracked company's domain but says nothing about
@@ -125,6 +128,88 @@ def title_match_score(title: str, text: str) -> float:
         return 0.0
     lowered = (text or "").lower()
     return sum(1 for t in tokens if t in lowered) / len(tokens)
+
+
+# --- pulling a role and employer out of a confirmation email ---------------------------
+#
+# Used when a confirmation arrives from a sender we don't track yet, so the application can
+# be created from the email instead of being typed in by hand.
+
+# Ordered: the more specific phrasing has to be tried before the looser one.
+_TITLE_PATTERNS = (
+    r"thank you for (?:your interest and )?applying (?:to|for)(?: the)?\s+(.+)",
+    r"thanks for applying (?:to|for)(?: the)?\s+(.+)",
+    r"we(?:'ve| have) received your application (?:to|for)(?: the)?\s+(.+)",
+    r"your application (?:to|for)(?: the)?\s+(.+)",
+    r"application (?:received|submitted)(?:\s*[:\-–]\s*)(.+)",
+    r"application for(?: the)?\s+(.+)",
+)
+
+# Trailing noise on an extracted title: "… at Acme", "… position", "… has been received".
+# Parenthesised suffixes are KEPT — real titles carry them ("Test Engineer Intern (AI)").
+_TITLE_TAIL_RE = re.compile(
+    r"\s+(?:at|with|@)\s+.+$"
+    r"|\s+(?:position|role|opening|vacancy|req(?:uisition)?)\b.*$"
+    r"|\s+(?:has|have|had|was|were|is|are)\s+been\s+\w+.*$"
+    r"|\s+(?:has|have|was|were|is|are)\s+\w+ed\b.*$",
+    re.IGNORECASE,
+)
+
+# Function-mailbox words that aren't part of the employer's name.
+_SENDER_NOISE_RE = re.compile(
+    r"\b(?:recruit(?:ing|ment)?|careers?|talent(?:\s+acquisition)?|hiring|jobs?|hr|people"
+    r"|no[\s-]?reply|do[\s-]?not[\s-]?reply|notifications?|team|via|support|mailer|info)\b",
+    re.IGNORECASE,
+)
+
+_DISPLAY_NAME_RE = re.compile(r"^\s*\"?([^\"<]+?)\"?\s*<")
+
+
+def extract_role_title(
+    subject: str, snippet: str = "", company: Optional[str] = None
+) -> Optional[str]:
+    """Best-effort role title from a confirmation email, or None if it names no role.
+
+    ``company`` is used to reject "Thank you for applying to Sea!", where the thing after
+    "applying to" is the employer, not a job.
+    """
+    for source in (subject or "", snippet or ""):
+        low = source.lower()
+        for pat in _TITLE_PATTERNS:
+            m = re.search(pat, low)
+            if not m:
+                continue
+            # Slice the ORIGINAL text so the title keeps its capitalisation.
+            title = source[m.start(1) : m.end(1)]
+            # Confirmations often run on: "... Analyst. We'll be in touch."
+            # Deliberately not split on "|" — real titles use it ("Audit | New Analyst").
+            title = re.split(r"[.!?\n]|\s[–—]\s", title)[0]
+            title = _TITLE_TAIL_RE.sub("", title).strip(" ,;:-–—\"'!")
+            if not (2 < len(title) <= 120):
+                continue
+            if company and title.strip().lower() == company.strip().lower():
+                continue  # that's the employer, not the role
+            return title
+    return None
+
+
+def company_from_sender(from_header: str, domain: str) -> str:
+    """Employer name from the From display name, falling back to the domain."""
+    m = _DISPLAY_NAME_RE.match(from_header or "")
+    if m:
+        name = _SENDER_NOISE_RE.sub("", m.group(1))
+        name = re.sub(r"\s{2,}", " ", name).strip(" -|,·•")
+        if len(name) > 1 and not _EMAIL_RE.search(name):
+            return name
+    # "careers.tiktok.com" -> "Tiktok": drop the public suffix and any leading label.
+    parts = [p for p in (domain or "").split(".") if p]
+    if not parts:
+        return "Unknown"
+    label = parts[-2] if len(parts) >= 2 else parts[0]
+    # Handle "gs.com.sg" style: skip well-known second-level suffixes.
+    if label in {"com", "co", "org", "net", "gov", "edu"} and len(parts) >= 3:
+        label = parts[-3]
+    return label.replace("-", " ").title()
 
 
 def url_ref_ids(url: str) -> set[str]:

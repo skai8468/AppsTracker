@@ -33,6 +33,7 @@ from ..models import (
     Notification,
     utcnow,
 )
+from ..util import slugify
 from . import matchers
 from .oauth import get_service
 
@@ -100,14 +101,30 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
     if not domain:
         return None
 
+    is_confirmation = matchers.looks_like_confirmation(msg.subject, msg.snippet)
+    is_noise = matchers.looks_like_noise(msg.subject, msg.snippet)
+
     company = _match_company(session, domain)
+    created_from_email = False
+
     if company is None:
-        return None
+        # Nothing tracked at this domain. A confirmation still means a real application
+        # exists, so create it from the email rather than requiring it to be typed in.
+        if not (is_confirmation and not is_noise and settings.auto_track_from_email):
+            return None
+        company = _company_from_email(session, msg, domain)
+        created_from_email = True
 
     # Which application at this company is the email about?
     app = _application_for_company(session, company, msg)
 
-    is_confirmation = matchers.looks_like_confirmation(msg.subject, msg.snippet)
+    # A confirmation naming a role we aren't tracking is a NEW application, not a reason to
+    # flip an unrelated one — without this, applying twice at one employer would silently
+    # re-confirm the first role instead of recording the second.
+    if is_confirmation and not is_noise and settings.auto_track_from_email:
+        if app is None or _names_an_untracked_role(session, company, msg):
+            app = _create_application_from_email(session, company, msg)
+            created_from_email = True
 
     event = EmailEvent(
         gmail_message_id=msg.message_id,
@@ -120,7 +137,9 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
         matched_application_id=app.id if app else None,
     )
 
-    if app and is_confirmation and app.status in (AppStatus.applied, AppStatus.interested):
+    if app and is_confirmation and app.status in (
+        AppStatus.applied, AppStatus.interested, AppStatus.confirmed
+    ):
         app.status = AppStatus.confirmed
         app.last_stage_change_at = utcnow()
         event.classified_stage = AppStatus.confirmed
@@ -128,9 +147,15 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
         session.add(app)
         session.add(event)
         session.commit()
+        job = session.get(Job, app.job_id)
+        role = job.title if job else msg.subject
         note = Notification(
             type="confirmation",
-            payload=f"✅ Application confirmed at {company.name}\n{msg.subject}",
+            payload=(
+                f"🆕 New application tracked at {company.name}\n{role}"
+                if created_from_email
+                else f"✅ Application confirmed at {company.name}\n{role}"
+            ),
             ref_email_event_id=event.id,
         )
     elif matchers.looks_like_noise(msg.subject, msg.snippet):
@@ -155,6 +180,86 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
     session.commit()
     session.refresh(note)
     return note
+
+
+def _company_from_email(session: Session, msg: ParsedMessage, domain: str) -> Company:
+    """Create a tracked company from a confirmation's sender, reusing one by slug.
+
+    The sender's domain is stored as the tracked domain, so matching works from here on
+    without a separate trip to the Add page.
+    """
+    name = matchers.company_from_sender(msg.from_addr, domain)
+    slug = slugify(name)
+    existing = session.exec(select(Company).where(Company.slug == slug)).first()
+    if existing is not None:
+        if not existing.email_domains:
+            existing.email_domains = domain
+            session.add(existing)
+            session.commit()
+        return existing
+    company = Company(name=name, slug=slug, email_domains=domain)
+    session.add(company)
+    session.commit()
+    session.refresh(company)
+    log.info("tracking new company from email: %s (%s)", name, domain)
+    return company
+
+
+def _create_application_from_email(
+    session: Session, company: Company, msg: ParsedMessage
+) -> Application:
+    """Record an application the confirmation email proves exists."""
+    title = matchers.extract_role_title(msg.subject, msg.snippet, company.name)
+    job = Job(
+        source="email",
+        source_job_id=msg.message_id,
+        # Some confirmations never name the role; the user can fill it in from the app.
+        title=title or "Role not specified",
+        company_name=company.name,
+        company_id=company.id,
+        sector=company.sector,
+        apply_url="",
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+
+    app = Application(
+        job_id=job.id,
+        status=AppStatus.confirmed,
+        applied_at=msg.received_at or utcnow(),
+        notes="Added automatically from a confirmation email.",
+    )
+    session.add(app)
+    session.commit()
+    session.refresh(app)
+    log.info("tracked new application from email: %s | %s", company.name, job.title)
+    return app
+
+
+def _names_an_untracked_role(
+    session: Session, company: Company, msg: ParsedMessage
+) -> bool:
+    """True when the email names a role none of the company's applications match.
+
+    Only says yes when a role was actually extracted — an unnamed role must never spawn a
+    duplicate application for one already tracked.
+    """
+    title = matchers.extract_role_title(msg.subject, msg.snippet, company.name)
+    if not title:
+        return False
+    jobs = session.exec(
+        select(Job)
+        .join(Application, Application.job_id == Job.id)
+        .where(Job.company_id == company.id)
+    ).all()
+    text = f"{msg.subject or ''} {msg.snippet or ''}"
+    for job in jobs:
+        if matchers.title_match_score(job.title, text) >= _TITLE_CONFIDENCE:
+            return False
+        if matchers.ref_in_text(job.apply_url, text):
+            return False
+    return True
 
 
 def _match_company(session: Session, domain: str) -> Optional[Company]:
@@ -327,6 +432,72 @@ def poll_once() -> dict[str, Any]:
         "notifications": len(notifications),
         "delivered": delivered,
         "dry_run": settings.gmail_dry_run,
+    }
+
+
+def scan_recent(days: int = 30, limit: int = 400) -> dict[str, Any]:
+    """One-off sweep of recent mail for confirmations the incremental poll never saw.
+
+    ``poll_once`` only looks forward from the stored history id, so anything that arrived
+    before Gmail was connected — or while the poller was broken — is invisible to it. The
+    search is narrowed to application-shaped subjects rather than every message in the
+    window, which keeps this to a few dozen API calls instead of thousands.
+    """
+    service = get_service()
+    if service is None:
+        return {"status": "gmail_not_configured"}
+
+    query = (
+        f"newer_than:{days}d "
+        "subject:(application OR applying OR applied OR candidature)"
+    )
+    notifications: list[Notification] = []
+    scanned = skipped = 0
+
+    with session_scope() as session:
+        page_token = None
+        while scanned < limit:
+            resp = (
+                service.users()
+                .messages()
+                .list(userId="me", q=query, maxResults=100, pageToken=page_token)
+                .execute()
+            )
+            for ref in resp.get("messages", []):
+                if scanned >= limit:
+                    break
+                try:
+                    msg = (
+                        service.users()
+                        .messages()
+                        .get(
+                            userId="me",
+                            id=ref["id"],
+                            format="metadata",
+                            metadataHeaders=["From", "Subject"],
+                        )
+                        .execute()
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    if not _is_gone(exc):
+                        raise
+                    skipped += 1
+                    continue
+                scanned += 1
+                note = process_message(session, _parse_api_message(msg))
+                if note:
+                    notifications.append(note)
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+
+    delivered = _deliver(notifications)
+    return {
+        "status": "ok",
+        "scanned": scanned,
+        "skipped": skipped,
+        "tracked": len(notifications),
+        "delivered": delivered,
     }
 
 
