@@ -27,6 +27,15 @@ CONFIRMATION_PATTERNS = (
     "your application to",
     "your application for",
     "application received",
+    # Deliberately phrase-level. A bare "thank you for your interest" is just as common in
+    # rejections, so only the wordings that state an application was made count.
+    "taking the time to apply",
+    "time to apply for",
+    "apply for the role",
+    "applying for the role",
+    "applied for the role",
+    "interest in joining",
+    "successfully received your",
 )
 
 # Transactional mail that arrives from a tracked company's domain but says nothing about
@@ -68,6 +77,10 @@ ATS_DOMAINS = frozenset({
     "symphonytalent.com", "successfactors.com", "successfactors.eu", "myworkday.com",
     "myworkdayjobs.com", "workday.com", "oracle.com", "oraclecloud.com", "ultipro.com",
     "silkroad.com", "applytojob.com", "hire.lever.co", "jobs.workable.com",
+    # Assessment and video-interview platforms mail on the employer's behalf too.
+    "plum.io", "hirevue.com", "codility.com", "hackerrank.com", "karat.com",
+    "sparkhire.com", "modernhire.com", "shl.com", "cut-e.com", "criteriacorp.com",
+    "testgorilla.com", "pymetrics.com", "vervoe.com", "willo.video",
 })
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@([\w-]+\.[\w.-]+)")
@@ -162,6 +175,9 @@ def title_match_score(title: str, text: str) -> float:
 
 # Ordered: the more specific phrasing has to be tried before the looser one.
 _TITLE_PATTERNS = (
+    # "…apply for the role of Services – Full-Time Analyst" — most explicit, so first.
+    r"appl(?:y|ied|ying) for the (?:role|position) of\s+(.+)",
+    r"appl(?:y|ied|ying) (?:to|for)(?: the)? (?:role|position)(?: of)?\s+(.+)",
     r"thank you for (?:your interest and )?applying (?:to|for)(?: the)?\s+(.+)",
     r"thanks for applying (?:to|for)(?: the)?\s+(.+)",
     r"we(?:'ve| have) received your application (?:to|for)(?: the)?\s+(.+)",
@@ -185,9 +201,9 @@ _TITLE_TAIL_RE = re.compile(
 # "EY Talent Attraction and Acquisition Team" has to reduce to "EY".
 _SENDER_NOISE_RE = re.compile(
     r"\b(?:recruit(?:ing|ment|er)?|careers?|talent|attraction|acquisition|hiring|hire"
-    r"|jobs?|hr|people|campus|university\s+relations|early\s+careers?|graduate\s+programme"
-    r"|no[\s-]?reply|do[\s-]?not[\s-]?reply|noreply|notifications?|team|via|support"
-    r"|mailer|info|admin|onboarding)\b",
+    r"|jobs?|human\s+resources|hr|people\s+team|campus|university\s+relations"
+    r"|early\s+careers?|graduate\s+programme|no[\s-]?reply|do[\s-]?not[\s-]?reply|noreply"
+    r"|notifications?|team|via|support|mailer|info|admin|onboarding)\b",
     re.IGNORECASE,
 )
 
@@ -215,8 +231,9 @@ def extract_role_title(
             # Slice the ORIGINAL text so the title keeps its capitalisation.
             title = source[m.start(1) : m.end(1)]
             # Confirmations often run on: "... Analyst. We'll be in touch."
-            # Deliberately not split on "|" — real titles use it ("Audit | New Analyst").
-            title = re.split(r"[.!?\n]|\s[–—]\s", title)[0]
+            # Split on sentence ends only — real titles use both "|" and dashes
+            # ("Audit | New Analyst", "Services – Full-Time Analyst, Singapore").
+            title = re.split(r"[.!?\n]", title)[0]
             title = _TITLE_TAIL_RE.sub("", title).strip(" ,;:-–—\"'!")
             if not (2 < len(title) <= 120):
                 continue
