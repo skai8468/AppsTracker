@@ -4,6 +4,11 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "AppsTracker",
   description: "Track job applications by link — Singapore tech & finance",
+  applicationName: "AppsTracker",
+  // iOS reads apple-mobile-web-app-title for the Home Screen label. Without it Safari
+  // falls back to <title>, and an icon added before a rename keeps the OLD name until
+  // it's removed and re-added — the name is captured once, at add time.
+  appleWebApp: { title: "AppsTracker" },
 };
 
 export const viewport: Viewport = {

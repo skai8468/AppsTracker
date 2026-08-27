@@ -54,7 +54,7 @@ export default function ApplicationsBoard() {
           !apps.length
             ? "Add a job link to start tracking"
             : filter
-              ? `${visible.length} of ${apps.length} · tap the tab again to clear`
+              ? `${visible.length} of ${apps.length}`
               : `${apps.length} tracked`
         }
         filters={

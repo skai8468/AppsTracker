@@ -104,8 +104,8 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
     if company is None:
         return None
 
-    # Is there an application to a job at this company?
-    app = _application_for_company(session, company)
+    # Which application at this company is the email about?
+    app = _application_for_company(session, company, msg)
 
     is_confirmation = matchers.looks_like_confirmation(msg.subject, msg.snippet)
 
@@ -155,14 +155,54 @@ def _match_company(session: Session, domain: str) -> Optional[Company]:
     return None
 
 
-def _application_for_company(session: Session, company: Company) -> Optional[Application]:
-    stmt = (
+# A title needs at least half its distinctive words in the email before we trust it over
+# recency; the requisition-id bonus below is deliberately large enough to clear this alone.
+_TITLE_CONFIDENCE = 0.5
+_REF_BONUS = 1.0
+
+
+def _application_for_company(
+    session: Session, company: Company, msg: Optional[ParsedMessage] = None
+) -> Optional[Application]:
+    """Pick which application at ``company`` an email is about.
+
+    With one open application the answer is trivial. With several — the same employer
+    running multiple grad roles — recency alone picks wrong roughly as often as it picks
+    right, so score each job's title (and the requisition id in its posting URL) against
+    the email text, and only override "most recently touched" on a clear, unambiguous win.
+    """
+    apps = session.exec(
         select(Application)
         .join(Job, Job.id == Application.job_id)
         .where(Job.company_id == company.id)
         .order_by(Application.last_stage_change_at.desc())
-    )
-    return session.exec(stmt).first()
+    ).all()
+    if not apps:
+        return None
+    most_recent = apps[0]
+    if len(apps) == 1 or msg is None:
+        return most_recent
+
+    text = f"{msg.subject or ''} {msg.snippet or ''}"
+    scored: list[tuple[float, Application]] = []
+    for app in apps:
+        job = session.get(Job, app.job_id)
+        if job is None:
+            continue
+        score = matchers.title_match_score(job.title, text)
+        if matchers.ref_in_text(job.apply_url, text):
+            score += _REF_BONUS
+        scored.append((score, app))
+
+    if not scored:
+        return most_recent
+    scored.sort(key=lambda s: s[0], reverse=True)
+    best_score, best_app = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0.0
+    # A tie means the email doesn't distinguish them — don't guess, fall back to recency.
+    if best_score >= _TITLE_CONFIDENCE and best_score > runner_up:
+        return best_app
+    return most_recent
 
 
 # --- Gmail API plumbing ---------------------------------------------------------------

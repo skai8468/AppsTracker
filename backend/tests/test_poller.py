@@ -5,7 +5,7 @@ import pytest
 from sqlmodel import SQLModel, Session, create_engine
 
 from app.gmail.poller import ParsedMessage, process_message
-from app.models import Application, AppStatus, Company, Job, Sector
+from app.models import Application, AppStatus, Company, Job, Sector, utcnow
 
 
 @pytest.fixture()
@@ -63,6 +63,66 @@ def test_unknown_sender_ignored(session):
     _seed(session)
     note = process_message(session, _msg("Anything", from_addr="hi@random.com"))
     assert note is None
+
+
+def _add_job(session, company, title, app_status=AppStatus.applied, url="http://x"):
+    job = Job(
+        source="manual", source_job_id=title, title=title,
+        company_name=company.name, company_id=company.id, apply_url=url,
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    app = Application(job_id=job.id, status=app_status)
+    session.add(app)
+    session.commit()
+    session.refresh(app)
+    return app
+
+
+# --- several open roles at one employer ------------------------------------------------
+
+def test_confirmation_picks_the_role_named_in_the_email(session):
+    """Recency alone would flip the wrong role; the title in the subject decides."""
+    company, _job, first = _seed(session)                      # "Grad SWE"
+    second = _add_job(session, company, "Quantitative Risk Analyst")
+
+    note = process_message(
+        session,
+        _msg("We have received your application for the Quantitative Risk Analyst role"),
+    )
+    session.refresh(first)
+    session.refresh(second)
+    assert second.status == AppStatus.confirmed
+    assert first.status == AppStatus.applied          # untouched
+    assert note is not None and note.type == "confirmation"
+
+
+def test_requisition_id_in_the_email_wins(session):
+    """ATS mail often names the role vaguely but always carries the posting id."""
+    company, _job, first = _seed(session)
+    second = _add_job(
+        session, company, "Associate", url="https://higher.acme.com/roles/170769"
+    )
+
+    process_message(session, _msg("Thank you for applying (ref 170769)", mid="ref"))
+    session.refresh(first)
+    session.refresh(second)
+    assert second.status == AppStatus.confirmed
+    assert first.status == AppStatus.applied
+
+
+def test_ambiguous_email_falls_back_to_most_recent(session):
+    """Nothing distinguishes the roles, so don't guess — keep the old recency behaviour."""
+    company, _job, first = _seed(session)
+    second = _add_job(session, company, "Quantitative Risk Analyst")
+    second.last_stage_change_at = utcnow()
+    session.add(second)
+    session.commit()
+
+    process_message(session, _msg("Thank you for applying", mid="vague"))
+    session.refresh(second)
+    assert second.status == AppStatus.confirmed       # most recently touched
 
 
 def test_duplicate_message_ignored(session):
