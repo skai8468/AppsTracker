@@ -207,6 +207,19 @@ def _application_for_company(
 
 # --- Gmail API plumbing ---------------------------------------------------------------
 
+def _is_gone(exc: Exception) -> bool:
+    """True when Gmail says a message no longer exists (404/410).
+
+    Read off the response rather than catching ``HttpError`` directly so this module
+    still imports when the Google client isn't installed.
+    """
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    try:
+        return int(status) in (404, 410)
+    except (TypeError, ValueError):
+        return False
+
+
 def _list_new_message_ids(service, start_history_id: str) -> tuple[list[str], Optional[str]]:
     ids: list[str] = []
     latest_history = start_history_id
@@ -259,18 +272,32 @@ def poll_once() -> dict[str, Any]:
             return {"status": "reinitialized"}
 
         notifications: list[Notification] = []
+        skipped = 0
         for mid in message_ids:
-            msg = (
-                service.users()
-                .messages()
-                .get(
-                    userId="me",
-                    id=mid,
-                    format="metadata",
-                    metadataHeaders=["From", "Subject"],
+            try:
+                msg = (
+                    service.users()
+                    .messages()
+                    .get(
+                        userId="me",
+                        id=mid,
+                        format="metadata",
+                        metadataHeaders=["From", "Subject"],
+                    )
+                    .execute()
                 )
-                .execute()
-            )
+            except Exception as exc:  # noqa: BLE001 - narrowed by _is_gone below
+                if not _is_gone(exc):
+                    # Transient (network, 5xx): bail without advancing the history id so
+                    # the message is retried next poll rather than silently dropped.
+                    raise
+                # The message vanished between history.list and here — deleted, or moved
+                # out of the mailbox. Skipping is essential: letting this escape aborts
+                # the poll before the history id advances, so every later poll retries the
+                # same dead id and the poller wedges permanently.
+                log.info("skipping message %s (no longer in mailbox)", mid)
+                skipped += 1
+                continue
             parsed = _parse_api_message(msg)
             if settings.gmail_dry_run:
                 log.info("[dry-run] %s | %s", parsed.from_addr, parsed.subject)
@@ -287,6 +314,7 @@ def poll_once() -> dict[str, Any]:
     return {
         "status": "ok",
         "new_messages": len(message_ids),
+        "skipped": skipped,
         "notifications": len(notifications),
         "delivered": delivered,
         "dry_run": settings.gmail_dry_run,
