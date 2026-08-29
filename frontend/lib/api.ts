@@ -130,4 +130,14 @@ export const api = {
   gmailStatus(): Promise<{ connected: boolean }> {
     return req<{ connected: boolean }>("/gmail/status");
   },
+
+  /** Re-read recent mail. The poller only looks forward, so an email that didn't match
+   *  when it arrived — before its domain was tracked — is only picked up by this. */
+  scanInbox(days = 30): Promise<{
+    status: string;
+    scanned?: number;
+    tracked?: number;
+  }> {
+    return req(`/admin/scan-inbox?days=${days}`, { method: "POST" });
+  },
 };

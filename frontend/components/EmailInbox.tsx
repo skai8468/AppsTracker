@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { AppStatus, EmailEvent } from "@/lib/types";
-import { Nav, STAGE_LABEL } from "./ui";
+import { Icon, Nav, STAGE_LABEL } from "./ui";
 
 /** The stages worth one-tap classifying straight from an email. */
 const STAGES: AppStatus[] = ["confirmed", "interviewing", "offer", "rejected"];
@@ -15,6 +15,8 @@ export default function EmailInbox() {
   const [events, setEvents] = useState<EmailEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [showUnrelated, setShowUnrelated] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanMsg, setScanMsg] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -45,6 +47,29 @@ export default function EmailInbox() {
     load();
   }
 
+  /** Re-read recent mail — for after adding or correcting a company's domain, when an
+   *  email that arrived un-matchable can finally be matched. */
+  async function rescan() {
+    if (scanning) return;
+    setScanning(true);
+    setScanMsg(null);
+    try {
+      const r = await api.scanInbox(30);
+      if (r.status !== "ok") {
+        setScanMsg("Gmail isn't connected.");
+      } else if (r.tracked) {
+        setScanMsg(`Found ${r.tracked} new — check Applications.`);
+      } else {
+        setScanMsg(`Checked ${r.scanned ?? 0} recent emails · nothing new matched.`);
+      }
+      await load();
+    } catch {
+      setScanMsg("Couldn't rescan — please try again.");
+    } finally {
+      setScanning(false);
+    }
+  }
+
   const unrelated = events.filter(isUnrelated);
   const active = events.filter((e) => !isUnrelated(e));
   const visible = showUnrelated ? unrelated : active;
@@ -54,9 +79,21 @@ export default function EmailInbox() {
       <Nav
         title="Inbox"
         sub={
-          unrelated.length
+          scanMsg ??
+          (unrelated.length
             ? `${active.length} to review · ${unrelated.length} unrelated`
-            : "Tap a stage to update the application"
+            : "Tap a stage to update the application")
+        }
+        actions={
+          <button
+            className={`icon-btn ${scanning ? "spinning" : ""}`}
+            onClick={rescan}
+            disabled={scanning}
+            aria-label="Rescan recent email"
+            title="Re-read the last 30 days — use after adding a company domain"
+          >
+            <Icon name="refresh" size={20} />
+          </button>
         }
         filters={
           unrelated.length > 0 ? (

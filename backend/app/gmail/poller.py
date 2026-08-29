@@ -471,10 +471,12 @@ def scan_recent(days: int = 30, limit: int = 400) -> dict[str, Any]:
     if service is None:
         return {"status": "gmail_not_configured"}
 
-    query = (
-        f"newer_than:{days}d "
-        "subject:(application OR applying OR applied OR candidature)"
-    )
+    # Built from the confirmation phrases themselves, and searched over the whole message
+    # rather than the subject. A subject-keyword filter missed Citi entirely — its subject
+    # is "Thank you for your interest in Citi!", with the proof only in the body — and any
+    # phrase added to CONFIRMATION_PATTERNS would otherwise have to be duplicated here.
+    phrases = " OR ".join(f'"{p}"' for p in matchers.CONFIRMATION_PATTERNS)
+    query = f"newer_than:{days}d ({phrases})"
     # (id, payload) not ORM rows -- see _deliver.
     notifications: list[tuple[int, str]] = []
     scanned = skipped = 0

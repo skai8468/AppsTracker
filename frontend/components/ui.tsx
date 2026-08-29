@@ -129,6 +129,14 @@ const ICON_PATHS: Record<string, ReactNode> = {
     </>
   ),
   plus: <path d="M12 5v14M5 12h14" />,
+  refresh: (
+    <>
+      <path d="M4 12a8 8 0 0 1 13.66-5.66L20 8" />
+      <path d="M20 4v4h-4" />
+      <path d="M20 12a8 8 0 0 1-13.66 5.66L4 16" />
+      <path d="M4 20v-4h4" />
+    </>
+  ),
 };
 
 export function Icon({ name, size = 26 }: { name: keyof typeof ICON_PATHS | string; size?: number }) {
