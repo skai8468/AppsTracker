@@ -10,6 +10,7 @@ configured yet.
 from __future__ import annotations
 
 import logging
+import os
 
 from ..config import settings
 
@@ -26,10 +27,30 @@ def _ensure_token_file() -> None:
     when the file is missing so a locally-refreshed token is never clobbered.
     """
     token_path = settings.gmail_token_path
-    if token_path.exists() or not settings.gmail_token_json.strip():
+    # Also re-seed an EMPTY file: that's what a failed write leaves, and a zero-byte token
+    # is no more usable than a missing one.
+    has_content = token_path.exists() and token_path.stat().st_size > 0
+    if has_content or not settings.gmail_token_json.strip():
         return
-    token_path.write_text(settings.gmail_token_json, encoding="utf-8")
+    _write_token(token_path, settings.gmail_token_json)
     log.info("Materialised Gmail token from GMAIL_TOKEN_JSON")
+
+
+def _write_token(path, contents: str) -> None:
+    """Write the token atomically: full temp file, then rename over the original.
+
+    ``write_text`` truncates before writing, so a failure part-way — a full disk, most
+    likely — leaves an EMPTY token behind and Gmail auth is dead until it's replaced by
+    hand. Renaming within the same directory is atomic, so the old token survives any
+    failure writing the new one.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(contents, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _load_credentials():
@@ -38,12 +59,24 @@ def _load_credentials():
 
     _ensure_token_file()
     token_path = settings.gmail_token_path
-    if not token_path.exists():
+    if not token_path.exists() or token_path.stat().st_size == 0:
+        # An empty file is what a failed write leaves behind; treat it as "not authorized"
+        # rather than letting a JSONDecodeError escape on every poll.
+        if token_path.exists():
+            log.error(
+                "Gmail token at %s is empty — re-run `python -m app.gmail.oauth` and "
+                "copy the file back", token_path,
+            )
         return None
-    creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+    try:
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+    except ValueError as exc:  # includes JSONDecodeError on a corrupt file
+        log.error("Gmail token at %s is unreadable (%s); re-run the OAuth flow",
+                  token_path, exc)
+        return None
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        token_path.write_text(creds.to_json(), encoding="utf-8")
+        _write_token(token_path, creds.to_json())
     return creds
 
 
@@ -55,7 +88,14 @@ def get_service():
         log.warning("google-api-python-client not installed; Gmail disabled")
         return None
 
-    creds = _load_credentials()
+    try:
+        creds = _load_credentials()
+    except Exception:  # noqa: BLE001 - refresh failure, revoked grant, no network
+        # Returning None degrades to "not configured"; letting this escape made the
+        # scheduled poll throw a full traceback every 5 minutes, which is what filled the
+        # disk that broke the token in the first place.
+        log.exception("Gmail credentials could not be loaded; treating as unconfigured")
+        return None
     if creds is None or not creds.valid:
         log.info("Gmail not authorized yet (run python -m app.gmail.oauth)")
         return None
