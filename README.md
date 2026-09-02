@@ -20,34 +20,52 @@ been, watches your Gmail for confirmations and recruiter replies, and pings a Te
 ## Architecture
 
 A **single always-on FastAPI process** does everything: serves the REST API, serves the
-statically-built **Next.js** dashboard from the same origin, runs the Gmail-poll job
-(APScheduler), and runs a **Telegram long-poll** bot (no webhook, so no public endpoint).
-The database is **SQLite** on disk — plenty for one user. Designed to run on a small
-always-on box (e.g. a GCP e2-micro); see [DEPLOY.md](DEPLOY.md).
+statically-built **Next.js** dashboard from the same origin, runs the Gmail poll
+(APScheduler, every 5 min), and runs a **Telegram long-poll** bot (no webhook, so no public
+endpoint). The database is **SQLite** on disk — plenty for one user. Designed to run on a
+small always-on box (e.g. a GCP e2-micro); see [DEPLOY.md](DEPLOY.md).
 
 ```
 backend/   FastAPI (API + serves the dashboard) + link preview + Gmail poller + Telegram bot + APScheduler
 frontend/  Next.js dashboard (Applications / Inbox / Settings) — static-exported to frontend/out
 ```
 
+Gmail is read via the **official Google API client** (`google-api-python-client`) over
+plain OAuth 2.0 with the `gmail.readonly` scope — no third-party service sits in between.
+
 ## Local development
 
 **Backend** (from `backend/`):
+
 ```bash
-python -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash
-pip install -r requirements.txt
-cp .env.example .env
-uvicorn app.main:app --port 8100 --reload               # API on http://localhost:8100
-python -m app.scrapers.runner                           # one-off scrape into the DB
-python -m pytest                                         # tests
+python -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash; .venv/bin/activate on *nix
+```
+
+```bash
+pip install -r requirements.txt && cp .env.example .env
+```
+
+```bash
+uvicorn app.main:app --port 8100 --reload
+```
+
+The API is then on <http://localhost:8100>. Run the tests with:
+
+```bash
+python -m pytest
 ```
 
 **Frontend** (from `frontend/`):
+
 ```bash
-npm install
-cp .env.local.example .env.local     # points at http://localhost:8100
-npm run dev                          # http://localhost:3000
+npm install && cp .env.local.example .env.local
 ```
+
+```bash
+npm run dev
+```
+
+Dashboard on <http://localhost:3000>, pointed at the backend on `:8100`.
 
 ## Connecting Gmail (read-only)
 
@@ -61,19 +79,15 @@ npm run dev                          # http://localhost:3000
 
 Set `GMAIL_DRY_RUN=true` to log matches without changing state while testing.
 
+The first poll only records the current mailbox state — it does not backfill. To sweep mail
+that arrived earlier, `POST /admin/scan-inbox?days=30`.
+
 ## Connecting Telegram
 
 1. Create a bot via [@BotFather](https://t.me/BotFather); set `TELEGRAM_BOT_TOKEN`.
 2. Start the app — it long-polls Telegram (`getUpdates`), so there's no webhook to
    register and no public endpoint to expose.
 3. Message your bot `/start` to link your chat. Commands: `/status`, `/jobs`.
-
-## Adding company scrapers
-
-Drop a module in `backend/app/scrapers/companies/` and decorate an
-`async def fetch() -> list[JobDTO]` with `@register("slug")`. Greenhouse boards are one
-line via `fetch_greenhouse("<board-token>", company_name=...)`. Failures are isolated, so a
-broken site never aborts a scrape pass.
 
 ## Deployment (single VM)
 
@@ -85,11 +99,11 @@ tunnel, so nothing is publicly exposed. `deploy/appstracker.service` (systemd) a
 
 ## Notes & limitations
 
-- The MyCareersFuture API is **undocumented** — isolated in one client with defensive
-  parsing and back-off. `"Traineeship"` is not a valid employmentType filter (`"Internship/
-  Attachment"` is).
-- **Salary** is reliable only from MyCareersFuture; company-page jobs show "Not disclosed".
-- **LinkedIn/Indeed are intentionally not scraped** (ToS + active blocking). Add such roles
-  manually instead.
+- **No job-board scraping.** LinkedIn, Indeed and the like are intentionally not scraped
+  (ToS + active blocking). You add roles by pasting their link, and the app fetches only
+  that page's metadata to prefill the title and company.
+- **Salary is not tracked** — job pages rarely publish it reliably.
 - Interview/offer/reject stages are **not auto-parsed** — you one-tap classify from the
   Inbox, which is far more reliable than parsing free-form email.
+- **Single worker.** The scheduler and Telegram poller are in-process singletons; running
+  more than one worker duplicates them.

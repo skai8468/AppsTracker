@@ -15,7 +15,7 @@ Group=appstracker
 WorkingDirectory=/opt/appstracker/backend
 # Bind to localhost only — reach the dashboard via an SSH tunnel, not a public port.
 # --workers 1 is REQUIRED: the scheduler and Telegram poller are in-process singletons;
-# extra workers would duplicate them (double scrapes, getUpdates conflicts).
+# extra workers would duplicate them (double Gmail polls, getUpdates conflicts).
 ExecStart=/opt/appstracker/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8100 --workers 1
 Restart=always
 RestartSec=5

@@ -1,184 +1,221 @@
-# Deploying AppsTracker on a GCP e2-micro (Debian)
+# Deploying AppsTracker
 
-The whole app runs as **one always-on process** on a single small VM:
+Target: a single small always-on VM (built and tested on a **GCP e2-micro / Debian 12**).
+Everything runs as **one process**:
 
-- FastAPI serves the **REST API** *and* the **static dashboard** from one port (`8100`).
-- APScheduler runs the **scrapers + Gmail poller** in-process.
-- A **Telegram long-poll** thread pulls updates (no webhook, so no public HTTPS needed).
+- FastAPI serves the **REST API** *and* the **static dashboard** on one port (`8100`).
+- APScheduler runs the **Gmail poll** in-process (every 5 min by default).
+- A **Telegram long-poll** thread pulls updates — no webhook, so no public HTTPS needed.
 - **SQLite** on the VM disk is the database (single user — no Postgres to run).
 
-Access is via an **SSH tunnel**, so nothing is exposed to the internet: no open ports, no
-TLS, no domain. The bot reaches out to Telegram; you reach the dashboard through SSH.
+Nothing is exposed to the internet: no open ports, no TLS, no domain. The bot dials out to
+Telegram; you reach the dashboard through an **SSH tunnel**.
 
 ```
-you ──ssh -L 8100:localhost:8100──▶ VM :8100 ──▶ FastAPI ─┬─ /            (dashboard)
-                                                          ├─ /jobs, ...   (API)
-                                                          ├─ APScheduler  (scrape + Gmail)
+you ──ssh -L 8100:localhost:8100──▶ VM :8100 ──▶ FastAPI ─┬─ /              (dashboard)
+                                                          ├─ /applications  (API)
+                                                          ├─ APScheduler    (Gmail poll)
                                                           └─ Telegram long-poll
 ```
 
-Sizing note: `next build` is memory-hungry; a 1 GB e2-micro needs **swap** (step 3) or it
-will OOM. Everything else fits comfortably.
-
 ---
 
-## 0. Local prep (once)
+## Before you start
 
-You need two things ready before touching the VM:
+Collect these three things on your **laptop** — the deploy stalls without them, and two of
+them cannot be produced on a headless VM.
 
-**a. Telegram bot token** — message **@BotFather** → `/newbot` → copy the token. That's the
-only Telegram secret now (long-polling needs no webhook secret).
+| # | What | Where it comes from |
+|---|------|---------------------|
+| 1 | Telegram bot token | @BotFather → `/newbot` |
+| 2 | `backend/credentials.json` | Google Cloud OAuth client (Desktop app) |
+| 3 | `backend/token.json` | running the OAuth flow locally, once |
 
-**b. Gmail read-only OAuth token** — the browser OAuth step must run on a machine with a
-browser, i.e. your laptop, not the headless VM:
-1. Google Cloud Console → new project → enable the **Gmail API**.
-2. **Credentials → Create → OAuth client ID → Desktop app** → download JSON to
-   `backend/credentials.json`. Add your Google account as a **Test user** on the consent
-   screen (staying in "Testing" mode is fine — you're the only user).
-3. Run the one-time flow locally:
-   ```bash
-   cd backend
-   ./.venv/Scripts/python.exe -m app.gmail.oauth   # Windows; use ./.venv/bin/python on *nix
-   ```
-   This writes `backend/token.json`. You'll copy that file to the VM in step 5.
+### 1. Telegram bot token
+
+Message **[@BotFather](https://t.me/BotFather)** → `/newbot` → copy the token it gives you.
+That is the only Telegram secret (long-polling needs no webhook secret).
+
+### 2 + 3. Gmail read-only token
+
+The OAuth consent step opens a browser, so it must run on your laptop, not the VM.
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → create a project → enable
+   the **Gmail API**.
+2. **APIs & Services → Credentials → Create credentials → OAuth client ID → Desktop app**.
+   Download the JSON to `backend/credentials.json`.
+3. On the **OAuth consent screen**, add your own Google account as a **Test user**. Staying
+   in *Testing* mode is fine — you are the only user, and it avoids Google verification.
+4. Run the one-time flow from the repo:
+
+```bash
+cd backend && python -m venv .venv && ./.venv/Scripts/pip.exe install -r requirements.txt && ./.venv/Scripts/python.exe -m app.gmail.oauth
+```
+
+(On macOS/Linux use `./.venv/bin/pip` and `./.venv/bin/python`.) A browser opens, you grant
+**read-only** Gmail access, and `backend/token.json` is written. You copy that file to the
+VM in step 5.
+
+> `token.json` holds a long-lived refresh token — treat it as a password. It is
+> git-ignored; never commit it.
 
 ---
 
 ## 1. Create the VM
+
 GCP Console → Compute Engine → **Create instance**:
-- Machine type **e2-micro**, region a free-tier one (e.g. `us-central1`) if you want the
-  always-free allowance.
+
+- Machine type **e2-micro**, in a free-tier region (e.g. `us-central1`) for the always-free
+  allowance.
 - Boot disk **Debian 12 (bookworm)**, 10–30 GB standard disk.
-- Allow no special firewall (we don't open any ports). SSH in via the Console or `gcloud`.
+- **No firewall rules** — we open no ports. SSH in via the Console or `gcloud compute ssh`.
 
 ## 2. Base packages
+
 ```bash
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip git curl
-# Node 20 (for `next build`)
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
+sudo apt update && sudo apt install -y python3 python3-venv python3-pip git curl
 ```
 
-## 3. Add swap (important on 1 GB)
 ```bash
-sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs
 ```
 
-## 4. Get the code + a service user
+Verify: `python3 --version` (3.11+) and `node --version` (v20).
+
+## 3. Add swap — required on a 1 GB VM
+
+`next build` is memory-hungry and will OOM on an e2-micro without swap.
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile && echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+Verify: `free -h` shows a 2 GB swap line.
+
+## 4. Service user + code
+
 ```bash
 sudo useradd -r -m -d /opt/appstracker -s /usr/sbin/nologin appstracker || true
-sudo git clone https://github.com/skai8468/appstracker.git /opt/appstracker
-sudo chown -R appstracker:appstracker /opt/appstracker
 ```
 
-## 5. Configure secrets + copy the Gmail token
+```bash
+sudo git clone https://github.com/skai8468/AppsTracker.git /opt/appstracker && sudo chown -R appstracker:appstracker /opt/appstracker
+```
+
+## 5. Configuration + the Gmail token
+
 ```bash
 sudo -u appstracker cp /opt/appstracker/backend/.env.example /opt/appstracker/backend/.env
-sudo -u appstracker nano /opt/appstracker/backend/.env      # set TELEGRAM_BOT_TOKEN
 ```
-From your **laptop**, copy the token you generated in step 0b:
+
+```bash
+sudo -u appstracker nano /opt/appstracker/backend/.env
+```
+
+Set **`TELEGRAM_BOT_TOKEN`**. Everything else has a working default — in particular leave
+`DATABASE_URL` empty to use SQLite.
+
+Then copy the token from your **laptop**:
+
 ```bash
 scp backend/token.json <you>@<vm>:/tmp/token.json
-# on the VM:
-sudo mv /tmp/token.json /opt/appstracker/backend/token.json
-sudo chown appstracker:appstracker /opt/appstracker/backend/token.json
 ```
-(SQLite needs no config — it's the default. Leave `DATABASE_URL` empty.)
 
-## 6. Install the service unit (before the first build)
+Back on the VM, move it into place:
+
 ```bash
-sudo cp /opt/appstracker/deploy/appstracker.service /etc/systemd/system/appstracker.service
-sudo systemctl daemon-reload
-sudo systemctl enable appstracker        # enable, don't start yet — nothing is built
+sudo mv /tmp/token.json /opt/appstracker/backend/token.json && sudo chown appstracker:appstracker /opt/appstracker/backend/token.json && sudo chmod 600 /opt/appstracker/backend/token.json
 ```
+
+`credentials.json` is only needed for the interactive OAuth flow — the VM does not need it.
+
+## 6. Install the systemd unit
+
+```bash
+sudo cp /opt/appstracker/deploy/appstracker.service /etc/systemd/system/appstracker.service && sudo systemctl daemon-reload && sudo systemctl enable appstracker
+```
+
+Enable only — do not start it yet, nothing is built.
 
 ## 7. First build + start
+
 ```bash
-sudo /opt/appstracker/deploy/deploy.sh   # builds venv + frontend, then starts the service
-journalctl -u appstracker -f                # expect "backend ready" + "Telegram long-poll started"
+sudo /opt/appstracker/deploy/deploy.sh
 ```
 
-## 8. Connect Telegram
-Message your bot **`/start`** — it captures your chat_id (stored in SQLite, survives
-restarts). Try `/status` and `/jobs`. Notifications fire on (1) an application confirmed,
-(2) a tracked company emailing you.
+This creates the venv, installs deps, builds the frontend into `frontend/out`, and starts
+the service. Watch it come up:
 
-## 9. Open the dashboard (SSH tunnel)
+```bash
+journalctl -u appstracker -f
+```
+
+Expect `AppsTracker backend ready`, `Serving dashboard from ...`, `Scheduler started` and
+`Telegram long-poll started`. Then confirm the API answers:
+
+```bash
+curl localhost:8100/health && curl localhost:8100/gmail/status
+```
+
+You want `{"status":"ok"}` and `{"connected":true}`. A `false` there means the token did not
+land — recheck step 5.
+
+## 8. Link Telegram
+
+Message your bot **`/start`**. It stores your chat_id in SQLite (survives restarts). Try
+`/status` and `/jobs`. Notifications fire when (1) an application is confirmed, (2) a
+tracked company emails you.
+
+## 9. Open the dashboard
+
 From your laptop:
+
 ```bash
 ssh -L 8100:localhost:8100 <you>@<vm>
 ```
-Then open <http://localhost:8100> in your browser. The dashboard and API both come through
-the tunnel; nothing is exposed publicly.
+
+Open <http://localhost:8100>. Dashboard and API both come through the tunnel; nothing is
+publicly reachable.
+
+## 10. Backfill older mail (optional)
+
+The first Gmail poll only records the current mailbox state — it does not look backwards.
+To sweep mail that arrived before Gmail was connected:
+
+```bash
+curl -X POST 'localhost:8100/admin/scan-inbox?days=30'
+```
 
 ---
 
 ## Updating later
-```bash
-ssh <you>@<vm>
-sudo /opt/appstracker/deploy/deploy.sh   # pull, rebuild, restart
-```
-If `next build` ever OOMs despite swap, build the frontend on your laptop
-(`NEXT_PUBLIC_API_BASE= npm run build`) and `rsync frontend/out/` to
-`/opt/appstracker/frontend/out/` instead — the VM then needs only Python.
-
-## Migrating an existing "JobTrack SG" install
-
-Only needed once, on a VM provisioned before the rename. A `git pull` alone can't do this —
-the systemd unit, the Linux user and the `/opt` directory all carry the old name.
-
-Push the renamed code to GitHub **first** — the new unit file and deploy script have to be
-in the checkout before they can be installed.
 
 ```bash
-# 1. stop the old service and back up the database
-sudo systemctl stop jobtrack && sudo systemctl disable jobtrack
-sudo cp /opt/jobtrack-sg/backend/jobtrack.sqlite ~/appstracker-backup.sqlite
-
-# 2. rename the directory, the user and the group
-sudo mv /opt/jobtrack-sg /opt/appstracker
-sudo usermod -l appstracker -d /opt/appstracker jobtrack
-sudo groupmod -n appstracker jobtrack
-sudo chown -R appstracker:appstracker /opt/appstracker
-
-# 3. pull the renamed code BEFORE installing the unit — deploy/appstracker.service and the
-#    updated deploy.sh only exist after this. (Set the remote first if you renamed the repo.)
-sudo -u appstracker git -C /opt/appstracker remote set-url origin <new-url>
-sudo -u appstracker git -C /opt/appstracker pull --ff-only
-
-# 4. drop the venv — it hardcodes the OLD absolute path in every script's shebang, so
-#    after the mv `.venv/bin/pip` dies with "cannot execute: required file not found"
-#    (that means the *interpreter* is gone, not pip). deploy.sh rebuilds it.
-sudo -u appstracker rm -rf /opt/appstracker/backend/.venv
-
-# 5. install the new unit and start
-sudo rm /etc/systemd/system/jobtrack.service
-sudo cp /opt/appstracker/deploy/appstracker.service /etc/systemd/system/appstracker.service
-sudo systemctl daemon-reload && sudo systemctl enable appstracker
 sudo /opt/appstracker/deploy/deploy.sh
 ```
 
-The database file is **left alone on purpose**. The app prefers `appstracker.sqlite` but
-falls back to an existing `jobtrack.sqlite`, so your data keeps working untouched. SQLite
-creates a missing file silently rather than erroring, so renaming it without that fallback
-would look like every tracked application had vanished. To finish the rename later, stop the
-service, `mv backend/jobtrack.sqlite backend/appstracker.sqlite`, and start it again.
+Pull → rebuild → restart, and safe to re-run.
 
-## Notes / gotchas
-- **Single worker only.** The systemd unit runs `uvicorn --workers 1` on purpose: the
-  scheduler and Telegram poller are in-process singletons. More workers = double scrapes
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `next build` killed during deploy | Out of memory. Confirm swap is on (`free -h`, step 3). Still failing? Build on your laptop with `NEXT_PUBLIC_API_BASE= npm run build` and `rsync frontend/out/` to `/opt/appstracker/frontend/out/` — the VM then needs only Python. |
+| Logs say `running API-only` | `frontend/out` is missing, so the frontend build failed. Re-run `deploy.sh` and read the build output. |
+| `/gmail/status` returns `connected: false` | `token.json` is missing, empty, or unreadable. The logs name the exact file and reason. Re-run the OAuth flow on your laptop and re-copy it. |
+| Gmail stops working after months | Google revoked the grant (password change, or a Testing-mode app idle > 6 months). Re-run the OAuth flow locally and re-copy `token.json`. |
+| Telegram bot silent | `TELEGRAM_BOT_TOKEN` unset in `backend/.env`, or another process is long-polling the same bot — only one `getUpdates` consumer is allowed. |
+| Service won't start | `journalctl -u appstracker -n 50`. Usually a missing or stale venv; `deploy.sh` rebuilds it. |
+
+## Notes
+
+- **Single worker only.** The unit runs `uvicorn --workers 1` deliberately: the scheduler
+  and Telegram poller are in-process singletons. More workers means duplicate Gmail polls
   and Telegram `getUpdates` conflicts.
-- **Backups.** The database is one file: `backend/appstracker.sqlite`. `cp` it (or
-  `sqlite3 .backup`) on a cron for peace of mind.
-- **Gmail token refresh.** `token.json` carries a long-lived refresh token; the app
-  refreshes the short access token itself. If Google revokes it (password change, or the
-  Testing-mode app idle > 6 months), re-run step 0b and re-copy the file.
-- **First Gmail poll** just records the current mailbox state (no backfill); confirmations
-  that arrive *after* that auto-flip the matching application to *confirmed*. Set
-  `GMAIL_DRY_RUN=true` for a safe first run that only logs matches.
-- **No public exposure.** If you ever want the dashboard reachable without a tunnel, put
-  Caddy in front for automatic TLS — but that needs a domain and an open port, which the
-  SSH-tunnel setup deliberately avoids.
+- **Backups.** The database is one file, `backend/appstracker.sqlite`. `cp` it (or use
+  `sqlite3 .backup`) on a cron.
+- **Safe first run.** Set `GMAIL_DRY_RUN=true` in `.env` to have the poller log matches
+  without changing any application state.
+- **Going public.** If you ever want the dashboard reachable without a tunnel, put Caddy in
+  front for automatic TLS — but that needs a domain and an open port, which this setup
+  deliberately avoids.
