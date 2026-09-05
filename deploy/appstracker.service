@@ -13,10 +13,12 @@ Type=simple
 User=appstracker
 Group=appstracker
 WorkingDirectory=/opt/appstracker/backend
-# Bind to localhost only — reach the dashboard via an SSH tunnel, not a public port.
+# Bind to all interfaces: the VM has no public IP exposure to worry about (no GCP
+# firewall rule opens 8100), and this is what lets the dashboard be reached at the VM's
+# Tailscale IP from any device on the tailnet. Nothing outside the tailnet can reach it.
 # --workers 1 is REQUIRED: the scheduler and Telegram poller are in-process singletons;
 # extra workers would duplicate them (double Gmail polls, getUpdates conflicts).
-ExecStart=/opt/appstracker/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8100 --workers 1
+ExecStart=/opt/appstracker/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8100 --workers 1
 Restart=always
 RestartSec=5
 # Secrets/config are read from backend/.env by pydantic-settings.

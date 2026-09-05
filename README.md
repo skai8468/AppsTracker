@@ -13,8 +13,9 @@ been, watches your Gmail for confirmations and recruiter replies, and pings a Te
 - **Pipeline**: each application moves through *Saved → Applied → Confirmed → Interviewing →
   Offer → Rejected*, showing **how long since you applied**.
 - **Watches Gmail** (read-only): auto-flips an application to *confirmed* when the
-  confirmation email lands; surfaces any other email from a tracked company for you to
-  one-tap classify.
+  confirmation email lands, and can **auto-track an application from a confirmation
+  email alone** — so applying somewhere without pasting the link first still gets picked
+  up. Surfaces any other email from a tracked company for you to one-tap classify.
 - **Telegram notifications**: (1) application confirmed, (2) a tracked company emailed you.
 
 ## Architecture
@@ -23,11 +24,12 @@ A **single always-on FastAPI process** does everything: serves the REST API, ser
 statically-built **Next.js** dashboard from the same origin, runs the Gmail poll
 (APScheduler, every 5 min), and runs a **Telegram long-poll** bot (no webhook, so no public
 endpoint). The database is **SQLite** on disk — plenty for one user. Designed to run on a
-small always-on box (e.g. a GCP e2-micro); see [DEPLOY.md](DEPLOY.md).
+small always-on box (e.g. a GCP e2-micro) reachable only over **Tailscale**; see
+[DEPLOY.md](DEPLOY.md).
 
 ```
 backend/   FastAPI (API + serves the dashboard) + link preview + Gmail poller + Telegram bot + APScheduler
-frontend/  Next.js dashboard (Applications / Inbox / Settings) — static-exported to frontend/out
+frontend/  Next.js dashboard (Apps / Inbox / Add, the last of which also manages tracked companies) — static-exported to frontend/out
 ```
 
 Gmail is read via the **official Google API client** (`google-api-python-client`) over
@@ -80,7 +82,12 @@ Dashboard on <http://localhost:3000>, pointed at the backend on `:8100`.
 Set `GMAIL_DRY_RUN=true` to log matches without changing state while testing.
 
 The first poll only records the current mailbox state — it does not backfill. To sweep mail
-that arrived earlier, `POST /admin/scan-inbox?days=30`.
+that arrived earlier, `POST /admin/scan-inbox?days=30` (also available as a "Rescan inbox"
+button on the Inbox tab).
+
+A confirmation email from a company you haven't added yet still creates the application and
+starts tracking that company (`AUTO_TRACK_FROM_EMAIL`, on by default) — set it to `false` to
+only ever auto-confirm applications you added yourself.
 
 ## Connecting Telegram
 
@@ -92,10 +99,10 @@ that arrived earlier, `POST /admin/scan-inbox?days=30`.
 ## Deployment (single VM)
 
 Runs as one always-on process on a small VM (built for a **GCP e2-micro / Debian**). The
-backend serves both the API and the static dashboard; the dashboard is reached over an SSH
-tunnel, so nothing is publicly exposed. `deploy/appstracker.service` (systemd) and
-`deploy/deploy.sh` (pull → build → restart) automate it. Full walkthrough in
-[DEPLOY.md](DEPLOY.md).
+backend serves both the API and the static dashboard; the dashboard is reached over
+**Tailscale** (the VM joins your private tailnet), so nothing is publicly exposed.
+`deploy/appstracker.service` (systemd) and `deploy/deploy.sh` (pull → build → restart)
+automate it. Full walkthrough in [DEPLOY.md](DEPLOY.md).
 
 ## Notes & limitations
 
