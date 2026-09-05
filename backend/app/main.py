@@ -3,7 +3,7 @@
 A single always-on process: the REST API, the static Next.js dashboard (served from the
 same origin when built), DB init, the background scheduler, and the Telegram long-poll
 bot. Run with a single worker so the scheduler and bot aren't duplicated:
-    uvicorn app.main:app --host 127.0.0.1 --port 8100 --workers 1
+    uvicorn app.main:app --host 0.0.0.0 --port 8100 --workers 1
 Local dev:
     uvicorn app.main:app --port 8100 --reload
 """

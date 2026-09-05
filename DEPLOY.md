@@ -8,14 +8,15 @@ Everything runs as **one process**:
 - A **Telegram long-poll** thread pulls updates — no webhook, so no public HTTPS needed.
 - **SQLite** on the VM disk is the database (single user — no Postgres to run).
 
-Nothing is exposed to the internet: no open ports, no TLS, no domain. The bot dials out to
-Telegram; you reach the dashboard through an **SSH tunnel**.
+Nothing is exposed to the public internet: no GCP firewall rule opens a port, no TLS, no
+domain. The bot dials out to Telegram; you reach the dashboard over **Tailscale** — the VM
+and your devices join the same private tailnet, and the dashboard is just a URL on it.
 
 ```
-you ──ssh -L 8100:localhost:8100──▶ VM :8100 ──▶ FastAPI ─┬─ /              (dashboard)
-                                                          ├─ /applications  (API)
-                                                          ├─ APScheduler    (Gmail poll)
-                                                          └─ Telegram long-poll
+you (on your tailnet) ──http://<vm-tailscale-ip>:8100──▶ VM :8100 ──▶ FastAPI ─┬─ /              (dashboard)
+                                                                               ├─ /applications  (API)
+                                                                               ├─ APScheduler    (Gmail poll)
+                                                                               └─ Telegram long-poll
 ```
 
 ---
@@ -81,6 +82,17 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt in
 ```
 
 Verify: `python3 --version` (3.11+) and `node --version` (v20).
+
+Install Tailscale and join it to your tailnet — this is how you'll reach the dashboard
+later, instead of an SSH tunnel or a public IP:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
+```
+
+The command prints a login URL; open it on your laptop to authorize the VM. Note the
+Tailscale IP it's assigned (`tailscale ip -4`, or the MagicDNS name shown in the
+[admin console](https://login.tailscale.com/admin/machines)) — you'll use it in step 9.
 
 ## 3. Add swap — required on a 1 GB VM
 
@@ -168,14 +180,10 @@ tracked company emails you.
 
 ## 9. Open the dashboard
 
-From your laptop:
-
-```bash
-ssh -L 8100:localhost:8100 <you>@<vm>
-```
-
-Open <http://localhost:8100>. Dashboard and API both come through the tunnel; nothing is
-publicly reachable.
+From any device on your tailnet (laptop or phone, with Tailscale installed and signed in
+to the same account), open `http://<vm-tailscale-ip>:8100` — or the MagicDNS name if
+you've enabled it, e.g. `http://appstracker:8100`. Dashboard and API are both served from
+there; nothing outside the tailnet can reach port 8100.
 
 ## 10. Backfill older mail (optional)
 
@@ -206,6 +214,7 @@ Pull → rebuild → restart, and safe to re-run.
 | Gmail stops working after months | Google revoked the grant (password change, or a Testing-mode app idle > 6 months). Re-run the OAuth flow locally and re-copy `token.json`. |
 | Telegram bot silent | `TELEGRAM_BOT_TOKEN` unset in `backend/.env`, or another process is long-polling the same bot — only one `getUpdates` consumer is allowed. |
 | Service won't start | `journalctl -u appstracker -n 50`. Usually a missing or stale venv; `deploy.sh` rebuilds it. |
+| Can't reach the dashboard over Tailscale | Confirm the VM shows up in `tailscale status` on your laptop, and that `sudo tailscale up` was run on the VM (check with `tailscale status` there too). Also confirm the service is actually listening on all interfaces: `ss -tlnp \| grep 8100` should show `0.0.0.0:8100`, not `127.0.0.1:8100`. |
 
 ## Notes
 
@@ -216,6 +225,6 @@ Pull → rebuild → restart, and safe to re-run.
   `sqlite3 .backup`) on a cron.
 - **Safe first run.** Set `GMAIL_DRY_RUN=true` in `.env` to have the poller log matches
   without changing any application state.
-- **Going public.** If you ever want the dashboard reachable without a tunnel, put Caddy in
+- **Going public.** If you ever want the dashboard reachable without Tailscale, put Caddy in
   front for automatic TLS — but that needs a domain and an open port, which this setup
   deliberately avoids.
