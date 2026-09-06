@@ -2,16 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { Application, AppStatus } from "@/lib/types";
+import type { Application, AppStatus, Sector } from "@/lib/types";
 import {
   ALL_STATUSES,
-  SectorBadge,
   Sheet,
   formatDate,
   fromDateInput,
   stageClass,
   toDateInput,
 } from "./ui";
+
+const SECTORS: Sector[] = ["tech", "finance", "other"];
 
 /** Everything the sheet can edit, held locally until Save. */
 interface Draft {
@@ -21,6 +22,7 @@ interface Draft {
   company: string;
   applyUrl: string;
   domains: string;
+  sector: Sector;
   notes: string;
 }
 
@@ -32,6 +34,7 @@ function draftFrom(app: Application): Draft {
     company: app.job?.company_name || "",
     applyUrl: app.job?.apply_url || "",
     domains: app.job?.company_email_domains || "",
+    sector: app.job?.sector || "other",
     notes: app.notes || "",
   };
 }
@@ -69,6 +72,7 @@ export default function ApplicationDetail({
     draft.company !== (app.job?.company_name || "") ||
     draft.applyUrl !== (app.job?.apply_url || "") ||
     draft.domains !== (app.job?.company_email_domains || "") ||
+    draft.sector !== (app.job?.sector || "other") ||
     draft.notes !== (app.notes || "");
 
   async function save() {
@@ -82,6 +86,7 @@ export default function ApplicationDetail({
         company: draft.company.trim() || undefined,
         apply_url: draft.applyUrl.trim() || undefined,
         email_domains: draft.domains.trim(),
+        sector: draft.sector,
         notes: draft.notes,
       });
       onSaved();
@@ -118,10 +123,7 @@ export default function ApplicationDetail({
     >
       <div className="detail-head">
         <div className="detail-title">{title}</div>
-        <div className="row-sub">
-          {company && <span>{company}</span>}
-          {app.job && <SectorBadge sector={app.job.sector} />}
-        </div>
+        <div className="row-sub">{company && <span>{company}</span>}</div>
       </div>
 
       <div className="group-label">Stage</div>
@@ -148,6 +150,20 @@ export default function ApplicationDetail({
             onChange={(e) => set("appliedAt", e.target.value)}
           />
         </div>
+      </div>
+
+      <div className="group-label">Sector</div>
+      <div className="segmented segmented-inline">
+        {SECTORS.map((s) => (
+          <button
+            key={s}
+            className={draft.sector === s ? "active" : ""}
+            onClick={() => set("sector", s)}
+            style={{ textTransform: "capitalize" }}
+          >
+            {s}
+          </button>
+        ))}
       </div>
 
       {app.status === "confirmed" && (
