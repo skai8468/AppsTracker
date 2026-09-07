@@ -164,6 +164,14 @@ ASSESSMENT_DOMAINS = frozenset({
 
 ATS_DOMAINS = _APPLICANT_TRACKING_DOMAINS | ASSESSMENT_DOMAINS
 
+# Assessment vendors that also run a practice product for individuals: HackerRank sends
+# contests, streaks and newsletters to anyone with an account, and some of that names big
+# employers. For these the sender proves nothing on its own and the wording has to carry
+# it — the rest exist only to run interviews an employer commissioned.
+_PRACTICE_PLATFORMS = frozenset({
+    "hackerrank.com", "codility.com", "shl.com", "testgorilla.com", "amcat.co",
+})
+
 _EMAIL_RE = re.compile(r"[\w.+-]+@([\w-]+\.[\w.-]+)")
 
 
@@ -187,12 +195,20 @@ def is_ats_domain(domain: str) -> bool:
 
 
 def is_assessment_domain(domain: str) -> bool:
-    """True for video-interview / online-assessment vendors.
-
-    Mail from these is an interview step by definition — nobody is sent a HireVue link
-    except to sit one — which is what makes the sender a usable stage signal on its own.
-    """
+    """True for video-interview / online-assessment vendors."""
     return _domain_in(domain, ASSESSMENT_DOMAINS)
+
+
+def sender_implies_interview(domain: str) -> bool:
+    """True when mail from this domain is an interview step whatever it says.
+
+    Nobody is sent a HireVue link except to sit one, so the sender alone is a usable
+    stage signal. Vendors with a consumer side are excluded: a HackerRank contest mail
+    naming an employer you track is not an invitation to interview with them.
+    """
+    return _domain_in(domain, ASSESSMENT_DOMAINS) and not _domain_in(
+        domain, _PRACTICE_PLATFORMS
+    )
 
 
 def domain_matches(sender_domain: str, company_domains: list[str]) -> bool:
@@ -382,6 +398,31 @@ def company_name_matches(a: str, b: str) -> bool:
     return len(shorter) >= _MIN_NAME_OVERLAP and shorter in longer
 
 
+# What a role title may carry beyond the employer's name before it stops being just the
+# employer. "JPMorganChase" over "J.P. Morgan" leaves "chase"; "Citigroup" leaves "group".
+# A real title leaves something longer — "Analyst" is seven characters.
+_MAX_EMPLOYER_TAIL = 6
+
+
+def title_is_the_employer(title: str, company: str) -> bool:
+    """True when an extracted role title is nothing but the employer's own name.
+
+    "Thank you for applying to JPMorganChase" yields "JPMorganChase" as the role, and
+    comparing it to the tracked name for equality did not recognise it, because the
+    tracked name is "J.P. Morgan". The result was a second application at JPMorgan for a
+    role called JPMorganChase, spawned by an assessment email about the first one.
+    """
+    t, c = normalize_company_name(title), normalize_company_name(company)
+    if not t:
+        return True
+    if not c:
+        return False
+    if t == c or t in c:
+        return True
+    # The employer's name with a little left over is another word of the same name.
+    return c in t and len(t) - len(c) <= _MAX_EMPLOYER_TAIL
+
+
 def name_in_text(name: str, text: str) -> bool:
     """True when an employer's name appears in the email, ignoring case and punctuation.
 
@@ -420,7 +461,7 @@ def extract_role_title(
             title = _TITLE_TAIL_RE.sub("", title).strip(" ,;:-–—\"'!")
             if not (2 < len(title) <= 120):
                 continue
-            if company and title.strip().lower() == company.strip().lower():
+            if company and title_is_the_employer(title, company):
                 continue  # that's the employer, not the role
             return title
     return None

@@ -106,16 +106,19 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
 
     is_confirmation = matchers.looks_like_confirmation(msg.subject, msg.snippet)
     is_noise = matchers.looks_like_noise(msg.subject, msg.snippet)
+    invited_in_words = matchers.looks_like_interview(msg.subject, msg.snippet)
     # A HireVue link is an interview whatever the wording says, so the vendor's domain
     # counts on its own — but only when the mail isn't the vendor's own login plumbing,
     # which is the one thing they send that isn't about sitting an assessment.
-    is_interview = matchers.looks_like_interview(msg.subject, msg.snippet) or (
-        matchers.is_assessment_domain(domain)
+    is_interview = invited_in_words or (
+        matchers.sender_implies_interview(domain)
         and not is_noise
         and not matchers.looks_like_rejection(msg.subject, msg.snippet)
     )
-    # Either wording proves an application exists, which is what licenses creating one.
-    proves_application = (is_confirmation or is_interview) and not is_noise
+    # Only the WORDING licenses creating records. The sender is good enough to move an
+    # application that already exists, and no further: a vendor's domain says an
+    # assessment is happening somewhere, not that this employer is worth tracking.
+    proves_application = (is_confirmation or invited_in_words) and not is_noise
     new_stage = AppStatus.interviewing if is_interview else AppStatus.confirmed
 
     company = _match_company(session, domain, msg)
@@ -137,11 +140,20 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
     # Which application at this company is the email about?
     app = _application_for_company(session, company, msg)
 
-    # An email naming a role we aren't tracking is a NEW application, not a reason to
-    # flip an unrelated one — without this, applying twice at one employer would silently
-    # re-confirm the first role instead of recording the second.
     if proves_application and settings.auto_track_from_email:
-        if app is None or _names_an_untracked_role(session, company, msg):
+        if app is None:
+            app = _create_application_from_email(session, company, msg, new_stage)
+            created_from_email = True
+        elif is_confirmation and not is_interview and _names_an_untracked_role(
+            session, company, msg
+        ):
+            # A confirmation naming a role we aren't tracking is a NEW application, not a
+            # reason to flip an unrelated one — without this, applying twice at one
+            # employer would silently re-confirm the first role instead of recording the
+            # second. Only a confirmation may do this. An assessment invitation is about
+            # an application you already have, and names the role loosely or not at all:
+            # a HackerRank test for a tracked JPMorgan application was filed as a second
+            # JPMorgan role, because the employer's name in it parsed as a job title.
             app = _create_application_from_email(session, company, msg, new_stage)
             created_from_email = True
 
@@ -580,9 +592,13 @@ def _scan_queries(days: int) -> list[str]:
             for i in range(0, len(terms), _MAX_QUERY_TERMS)
         )
     ]
-    # Assessment vendors are swept by sender too. Their subjects vary wildly, but nothing
-    # they send is uninteresting, and this is the mail the sweep was widened to catch.
-    senders = sorted(matchers.ASSESSMENT_DOMAINS)
+    # Vendors that do nothing but run commissioned interviews are swept by sender too:
+    # their subjects vary wildly and nothing they send is uninteresting. The ones with a
+    # consumer side are left out — sweeping HackerRank by sender drags in every contest
+    # and streak mail, which is most of what it sends.
+    senders = sorted(
+        d for d in matchers.ASSESSMENT_DOMAINS if matchers.sender_implies_interview(d)
+    )
     queries += [
         f"{window} ({' OR '.join('from:' + d for d in chunk)})"
         for chunk in (

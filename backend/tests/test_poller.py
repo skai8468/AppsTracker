@@ -425,18 +425,73 @@ def test_a_vendors_login_code_is_not_an_interview(session):
     assert app.status == AppStatus.applied
 
 
-def test_an_invitation_for_an_untracked_role_lands_at_the_interview_stage(session):
-    """Filing it as "confirmed" would lose the fact that made it worth catching."""
-    company, existing = _seed_named(session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com")
+def test_an_assessment_never_splits_off_a_second_application(session):
+    """The bug this section exists for: a HackerRank test for a tracked JPMorgan
+    application was filed as a brand-new JPMorgan role called "JPMorganChase"."""
+    _company, existing = _seed_named(
+        session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com",
+        title="2027 Software Engineer Program",
+    )
+    process_message(session, ParsedMessage(
+        "hr1", "t", "HackerRank <noreply@hackerrank.com>",
+        "Invitation to complete the JPMorganChase coding assessment",
+        "Thank you for applying to JPMorganChase. Please complete the test below.",
+        None,
+    ))
+    session.refresh(existing)
+    assert len(_apps(session)) == 1                  # advanced, not duplicated
+    assert existing.status == AppStatus.interviewing
+
+
+def test_an_invitation_creates_nothing_when_the_role_is_already_tracked(session):
+    """Assessment mail names the role loosely; it is about an application you have."""
+    _company, existing = _seed_named(session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com")
     process_message(session, _msg(
         "Your application for Quantitative Research Analyst — video interview invitation",
         from_addr="Careers <campus@jpmorgan.com>",
         mid="hv8",
     ))
     session.refresh(existing)
-    assert existing.status == AppStatus.applied     # untouched
-    new = [a for a in _apps(session) if a.id != existing.id]
-    assert len(new) == 1 and new[0].status == AppStatus.interviewing
+    assert len(_apps(session)) == 1
+    assert existing.status == AppStatus.interviewing
+
+
+def test_an_invitation_still_records_an_employer_we_track_nothing_for(session):
+    """Nothing to advance, so the invitation is the only evidence the application exists."""
+    process_message(session, _msg(
+        "Invitation to complete a video interview for Data Analyst, Growth",
+        from_addr="Monee Talent <talent@monee.com>",
+        mid="hv10",
+    ))
+    apps = _apps(session)
+    assert len(apps) == 1
+    assert apps[0].status == AppStatus.interviewing
+
+
+def test_a_practice_platform_needs_wording_not_just_its_domain(session):
+    """HackerRank mails contests and streaks to anyone; the sender proves nothing."""
+    _company, app = _seed_named(session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com")
+    note = process_message(session, _msg(
+        "J.P. Morgan is hiring — join this week's contest",
+        from_addr="HackerRank <noreply@hackerrank.com>",
+        mid="hr2",
+    ))
+    session.refresh(app)
+    assert app.status == AppStatus.applied           # not an invitation to interview
+    assert note is not None and note.type == "company_email"
+
+
+def test_a_vendors_domain_alone_never_creates_records(session):
+    """"Action required" from an untracked employer's vendor is not enough to track it."""
+    from sqlmodel import select as _select
+    note = process_message(session, _msg(
+        "Action required by 12 Sep",
+        from_addr="Monee Talent <noreply@hirevue.com>",
+        mid="hv11",
+    ))
+    assert note is None
+    assert session.exec(_select(Company)).all() == []
+    assert _apps(session) == []
 
 
 def test_an_offer_is_not_walked_back_by_a_late_reminder(session):
