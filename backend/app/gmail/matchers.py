@@ -2,11 +2,17 @@
 
 Two questions the poller asks of every message:
 
-1. Which tracked company (if any) does the sender domain belong to?
-2. Does this look like an application *confirmation* (so we can auto-flip the stage)?
+1. Which tracked company (if any) does the sender belong to?
+2. Does this look like an application *confirmation* or an *interview invitation* (so we
+   can auto-flip the stage)?
 
-Everything else — interview / offer / reject — is deliberately left for the user to
-one-tap classify, because those emails are too free-form to auto-parse reliably.
+Offers and rejections are still left for the user to one-tap classify, because those are
+too free-form to auto-parse reliably. Interview invitations used to be in that group; they
+came back out because the assessment vendors that carry most of them (HireVue and friends)
+write one kind of mail only, so the sender alone is close to conclusive. Rejections are
+parsed here, but only as a veto — they quote the stage they are ending ("we will not be
+progressing you to interview"), so without them the invitation wordings match rejections
+just as well.
 """
 from __future__ import annotations
 
@@ -65,11 +71,78 @@ NOISE_PATTERNS = (
     "unsubscribe from job",
 )
 
+# Invitations to sit an interview or an online assessment. Restricted to wordings that
+# state a stage is being *offered*: the bare word "interview" is as common in a rejection
+# as in an invite, so it is never enough on its own.
+INTERVIEW_PATTERNS = (
+    "video interview",
+    "hirevue",
+    "on-demand interview",
+    "on demand interview",
+    "one-way interview",
+    "digital interview",
+    "recorded interview",
+    "pre-recorded interview",
+    "interview invitation",
+    "invitation to interview",
+    "invitation to an interview",
+    "invite you to interview",
+    "invited to interview",
+    "invited you to interview",
+    "would like to interview",
+    "schedule your interview",
+    "schedule an interview",
+    "book your interview",
+    "select an interview",
+    "interview with our team",
+    "online assessment",
+    "immersive assessment",
+    "game-based assessment",
+    "gamified assessment",
+    "situational judgement",
+    "assessment invitation",
+    "invitation to complete",
+    "complete your assessment",
+    "complete your video",
+    "coding challenge",
+    "technical assessment",
+    "assessment centre",
+    "assessment center",
+    "phone screen",
+    "next stage of the process",
+    "next stage of our",
+    "next round of",
+)
+
+# Vetoes an interview reading — see the module docstring. Never used to auto-set the
+# rejected stage: which of these is a real rejection is exactly the free-form judgement
+# left to the user.
+REJECTION_PATTERNS = (
+    "not be moving forward",
+    "not moving forward",
+    "not be progressing",
+    "not progressing",
+    "regret to inform",
+    "unfortunately",
+    "not been successful",
+    "were not successful",
+    "not be successful",
+    "not selected",
+    "were not selected",
+    "decided not to proceed",
+    "unable to proceed",
+    "unable to offer",
+    "no longer under consideration",
+    "other candidates",
+    "not shortlisted",
+    "will not be taking your application",
+)
+
 # Applicant-tracking platforms that send on behalf of many employers. EY mails from
 # yello.co and Goldman from oracle.com — neither is the employer's own domain, so storing
 # one as a company's tracked domain would make the NEXT employer using that platform match
 # the wrong company. Senders here are identified by display name instead.
-ATS_DOMAINS = frozenset({
+_APPLICANT_TRACKING_DOMAINS = frozenset({
     "yello.co", "greenhouse.io", "lever.co", "ashbyhq.com", "workable.com",
     "smartrecruiters.com", "jobvite.com", "icims.com", "taleo.net", "brassring.com",
     "kenexa.com", "avature.net", "recruitee.com", "teamtailor.com", "breezy.hr",
@@ -77,11 +150,19 @@ ATS_DOMAINS = frozenset({
     "symphonytalent.com", "successfactors.com", "successfactors.eu", "myworkday.com",
     "myworkdayjobs.com", "workday.com", "oracle.com", "oraclecloud.com", "ultipro.com",
     "silkroad.com", "applytojob.com", "hire.lever.co", "jobs.workable.com",
-    # Assessment and video-interview platforms mail on the employer's behalf too.
+})
+
+# Assessment and video-interview platforms mail on the employer's behalf too, so they are
+# shared senders like the above. They are kept separate because they only ever write about
+# one thing: the sender alone is enough to read a message as an interview invitation.
+ASSESSMENT_DOMAINS = frozenset({
     "plum.io", "hirevue.com", "codility.com", "hackerrank.com", "karat.com",
     "sparkhire.com", "modernhire.com", "shl.com", "cut-e.com", "criteriacorp.com",
     "testgorilla.com", "pymetrics.com", "vervoe.com", "willo.video",
+    "myinterview.com", "talentlens.com", "cappassess.com", "amcat.co",
 })
+
+ATS_DOMAINS = _APPLICANT_TRACKING_DOMAINS | ASSESSMENT_DOMAINS
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@([\w-]+\.[\w.-]+)")
 
@@ -92,15 +173,26 @@ def extract_domain(from_header: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
-def is_ats_domain(domain: str) -> bool:
-    """True if the domain belongs to a shared recruiting platform, not one employer."""
+def _domain_in(domain: str, group: frozenset[str]) -> bool:
     d = (domain or "").lower().strip()
     if not d:
         return False
-    if d in ATS_DOMAINS:
-        return True
     # Subdomains too: "mail.yello.co", "e.greenhouse.io".
-    return any(d.endswith("." + ats) for ats in ATS_DOMAINS)
+    return d in group or any(d.endswith("." + g) for g in group)
+
+
+def is_ats_domain(domain: str) -> bool:
+    """True if the domain belongs to a shared recruiting platform, not one employer."""
+    return _domain_in(domain, ATS_DOMAINS)
+
+
+def is_assessment_domain(domain: str) -> bool:
+    """True for video-interview / online-assessment vendors.
+
+    Mail from these is an interview step by definition — nobody is sent a HireVue link
+    except to sit one — which is what makes the sender a usable stage signal on its own.
+    """
+    return _domain_in(domain, ASSESSMENT_DOMAINS)
 
 
 def domain_matches(sender_domain: str, company_domains: list[str]) -> bool:
@@ -128,6 +220,23 @@ def looks_like_noise(subject: str, snippet: str) -> bool:
     """
     text = f"{subject or ''} {snippet or ''}".lower()
     return any(p in text for p in NOISE_PATTERNS)
+
+
+def looks_like_rejection(subject: str, snippet: str) -> bool:
+    text = f"{subject or ''} {snippet or ''}".lower()
+    return any(p in text for p in REJECTION_PATTERNS)
+
+
+def looks_like_interview(subject: str, snippet: str) -> bool:
+    """True for an invitation to an interview or assessment, rejections excluded.
+
+    The veto is not a refinement: a rejection that closes with "thank you for the time you
+    put into your video interview" matches INTERVIEW_PATTERNS outright.
+    """
+    text = f"{subject or ''} {snippet or ''}".lower()
+    if any(p in text for p in REJECTION_PATTERNS):
+        return False
+    return any(p in text for p in INTERVIEW_PATTERNS)
 
 
 # --- picking *which* application an email is about -------------------------------------
@@ -210,6 +319,80 @@ _SENDER_NOISE_RE = re.compile(
 # Left behind once the words above are removed: "EY and", "Acme &", "- Acme".
 _DANGLING_RE = re.compile(r"\s+(?:and|&|\+)\s+|^\s*(?:and|&|\+)\s+|\s+(?:and|&|\+)\s*$",
                           re.IGNORECASE)
+
+
+# Vendor brands as they appear in a *display* name: "HireVue <no-reply@hirevue.com>".
+# These name the platform rather than whoever is hiring, so a name made only of them
+# identifies no employer. Oracle and other platform vendors that are also major employers
+# in their own right are deliberately absent — applying to them has to keep working.
+_ATS_BRAND_TOKENS = frozenset({
+    "hirevue", "workday", "myworkday", "greenhouse", "lever", "yello", "ashby",
+    "ashbyhq", "workable", "smartrecruiters", "jobvite", "icims", "taleo", "brassring",
+    "kenexa", "avature", "recruitee", "teamtailor", "breezy", "bamboohr", "personio",
+    "eightfold", "phenom", "phenompeople", "radancy", "symphonytalent", "successfactors",
+    "ultipro", "silkroad", "plum", "codility", "hackerrank", "karat", "sparkhire",
+    "modernhire", "criteriacorp", "testgorilla", "pymetrics", "vervoe", "willo",
+    "myinterview", "cappassess", "amcat",
+})
+
+# Legal-form and grouping words that differ between how an employer names itself on a job
+# posting and how its platform names it in mail: "J.P. Morgan" vs "JPMorgan Chase & Co.".
+_NAME_SUFFIX_TOKENS = frozenset({
+    "co", "inc", "ltd", "limited", "llc", "plc", "corp", "corporation", "company",
+    "group", "holdings", "holding", "pte", "sdn", "bhd", "sa", "nv", "bv", "ag",
+    "gmbh", "spa", "and", "the", "via",
+})
+
+# "EY" would be a substring of half the names in any list, so short names have to match
+# exactly. Four characters is the shortest that survives the containment test below.
+_MIN_NAME_OVERLAP = 4
+
+
+def normalize_company_name(name: str) -> str:
+    """Comparable form of an employer name: lowercase letters and digits only, with
+    platform brands and legal-form words dropped.
+
+    An empty result means the name identified no employer at all — "HireVue" reduces to
+    nothing, which is how a platform signing its own mail is told apart from a real one.
+    """
+    return "".join(
+        t for t in _TOKEN_RE.findall((name or "").lower())
+        if t not in _ATS_BRAND_TOKENS and t not in _NAME_SUFFIX_TOKENS
+    )
+
+
+def is_ats_brand_name(name: str) -> bool:
+    """True when a sender's display name is nothing but the platform's own brand."""
+    return bool((name or "").strip()) and not normalize_company_name(name)
+
+
+def company_name_matches(a: str, b: str) -> bool:
+    """True when two spellings of an employer name refer to the same employer.
+
+    Platform mail rarely reuses the name from the job posting: the tracked company is
+    "J.P. Morgan" and the HireVue invitation signs "JPMorganChase". Comparing slugs for
+    equality — the only test there used to be — misses every pair like that.
+    """
+    na, nb = normalize_company_name(a), normalize_company_name(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(shorter) >= _MIN_NAME_OVERLAP and shorter in longer
+
+
+def name_in_text(name: str, text: str) -> bool:
+    """True when an employer's name appears in the email, ignoring case and punctuation.
+
+    The last resort for platform-signed mail: HireVue puts its own name in the From header
+    and the employer's in the subject ("Complete your JPMorganChase video interview").
+    """
+    n = normalize_company_name(name)
+    if len(n) < _MIN_NAME_OVERLAP:
+        return False
+    return n in "".join(_TOKEN_RE.findall((text or "").lower()))
+
 
 _DISPLAY_NAME_RE = re.compile(r"^\s*\"?([^\"<]+?)\"?\s*<")
 

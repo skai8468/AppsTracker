@@ -65,3 +65,57 @@ def test_confirmation_detection():
     assert not matchers.looks_like_confirmation(
         "Interview invitation", "We'd like to schedule a call"
     )
+
+
+# --- employer names as the platforms spell them -----------------------------------------
+
+def test_platform_display_name_identifies_no_employer():
+    """"HireVue <no-reply@hirevue.com>" says who sent it, not who is hiring."""
+    assert matchers.normalize_company_name("HireVue") == ""
+    assert matchers.is_ats_brand_name("HireVue")
+    assert not matchers.is_ats_brand_name("J.P. Morgan")
+
+
+def test_the_same_employer_spelled_two_ways_matches():
+    """The tracked name comes from the job posting, the email's from the ATS."""
+    assert matchers.company_name_matches("J.P. Morgan", "JPMorganChase")
+    assert matchers.company_name_matches("Citi", "Citigroup Global Markets")
+    assert matchers.company_name_matches("Acme", "Acme Pte Ltd")
+    assert not matchers.company_name_matches("DBS", "OCBC")
+
+
+def test_short_names_are_not_matched_by_containment():
+    """"EY" is a substring of too much to be tested that loosely."""
+    assert not matchers.company_name_matches("EY", "Keystone Partners")
+    assert matchers.company_name_matches("EY", "EY")
+
+
+def test_employer_found_in_the_subject_when_the_sender_is_the_platform():
+    assert matchers.name_in_text(
+        "J.P. Morgan", "Complete your JPMorganChase video interview"
+    )
+    assert not matchers.name_in_text("DBS", "Complete your JPMorganChase video interview")
+
+
+# --- interview and assessment invitations -----------------------------------------------
+
+def test_hirevue_invitation_is_read_as_an_interview():
+    assert matchers.looks_like_interview("Complete your video interview", "")
+    assert matchers.looks_like_interview("Your HireVue is ready", "")
+    assert matchers.looks_like_interview("Invitation to complete an online assessment", "")
+
+
+def test_a_rejection_quoting_the_interview_is_not_an_invitation():
+    """Rejections name the stage they are ending, so they match invitation wording."""
+    assert not matchers.looks_like_interview(
+        "An update on your candidacy",
+        "Unfortunately, following your video interview we will not be moving forward.",
+    )
+    assert matchers.looks_like_rejection("", "we regret to inform you")
+
+
+def test_assessment_vendors_are_separable_from_other_shared_senders():
+    assert matchers.is_assessment_domain("hirevue.com")
+    assert matchers.is_assessment_domain("mail.hirevue.com")
+    assert not matchers.is_assessment_domain("greenhouse.io")   # an ATS, not a test
+    assert matchers.is_ats_domain("greenhouse.io")

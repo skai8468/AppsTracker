@@ -7,6 +7,9 @@ Flow per poll:
   * ``process_message`` decides what to do (pure w.r.t. the DB session, so it's testable):
       - matches a company you APPLIED to + looks like a confirmation  -> flip app to
         ``confirmed`` and queue a "confirmation" notification.
+      - same, but an interview or assessment invitation                -> flip app to
+        ``interviewing`` and queue an "interview" notification. Checked first, because
+        these mails usually restate the confirmation wording as well.
       - matches any tracked company                                   -> store an
         EmailEvent and queue a "company_email" notification for you to classify.
   * Queued notifications are pushed to Telegram (best-effort).
@@ -103,27 +106,43 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
 
     is_confirmation = matchers.looks_like_confirmation(msg.subject, msg.snippet)
     is_noise = matchers.looks_like_noise(msg.subject, msg.snippet)
+    # A HireVue link is an interview whatever the wording says, so the vendor's domain
+    # counts on its own — but only when the mail isn't the vendor's own login plumbing,
+    # which is the one thing they send that isn't about sitting an assessment.
+    is_interview = matchers.looks_like_interview(msg.subject, msg.snippet) or (
+        matchers.is_assessment_domain(domain)
+        and not is_noise
+        and not matchers.looks_like_rejection(msg.subject, msg.snippet)
+    )
+    # Either wording proves an application exists, which is what licenses creating one.
+    proves_application = (is_confirmation or is_interview) and not is_noise
+    new_stage = AppStatus.interviewing if is_interview else AppStatus.confirmed
 
     company = _match_company(session, domain, msg)
     created_from_email = False
 
     if company is None:
-        # Nothing tracked at this domain. A confirmation still means a real application
-        # exists, so create it from the email rather than requiring it to be typed in.
-        if not (is_confirmation and not is_noise and settings.auto_track_from_email):
+        # Nothing tracked at this domain. The email still proves a real application
+        # exists, so create it rather than requiring it to be typed in.
+        if not (proves_application and settings.auto_track_from_email):
             return None
         company = _company_from_email(session, msg, domain)
+        if company is None:
+            # Only the platform signed it and no tracked company was named inside.
+            # Inventing an employer called "HireVue" is worse than leaving it untracked.
+            log.info("unattributable platform mail: %s | %s", msg.from_addr, msg.subject)
+            return None
         created_from_email = True
 
     # Which application at this company is the email about?
     app = _application_for_company(session, company, msg)
 
-    # A confirmation naming a role we aren't tracking is a NEW application, not a reason to
+    # An email naming a role we aren't tracking is a NEW application, not a reason to
     # flip an unrelated one — without this, applying twice at one employer would silently
     # re-confirm the first role instead of recording the second.
-    if is_confirmation and not is_noise and settings.auto_track_from_email:
+    if proves_application and settings.auto_track_from_email:
         if app is None or _names_an_untracked_role(session, company, msg):
-            app = _create_application_from_email(session, company, msg)
+            app = _create_application_from_email(session, company, msg, new_stage)
             created_from_email = True
 
     event = EmailEvent(
@@ -137,7 +156,27 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
         matched_application_id=app.id if app else None,
     )
 
-    if app and is_confirmation and app.status in (
+    # Interview is tested first: an assessment invitation routinely opens by thanking you
+    # for applying, so it reads as a confirmation too, and the later stage has to win.
+    if app and is_interview and app.status in _ADVANCEABLE:
+        app.status = AppStatus.interviewing
+        app.last_stage_change_at = utcnow()
+        event.classified_stage = AppStatus.interviewing
+        event.is_read = True
+        session.add(app)
+        session.add(event)
+        session.commit()
+        job = session.get(Job, app.job_id)
+        role = job.title if job else "Role not specified"
+        note = Notification(
+            type="interview",
+            payload=(
+                "🎥 Interview / assessment — "
+                f"{company.name}\n{role}\n{msg.subject}"
+            ),
+            ref_email_event_id=event.id,
+        )
+    elif app and is_confirmation and app.status in (
         AppStatus.applied, AppStatus.interested, AppStatus.confirmed
     ):
         app.status = AppStatus.confirmed
@@ -158,7 +197,7 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
             ),
             ref_email_event_id=event.id,
         )
-    elif matchers.looks_like_noise(msg.subject, msg.snippet):
+    elif is_noise:
         # Login codes, password resets and job alerts share the company's domain but say
         # nothing about an application. File them read so they neither fill the inbox nor
         # fire Telegram — still stored, so it can be re-classified if this guessed wrong.
@@ -182,13 +221,20 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
     return note
 
 
-def _company_from_email(session: Session, msg: ParsedMessage, domain: str) -> Company:
-    """Create a tracked company from a confirmation's sender, reusing one by slug.
+def _company_from_email(
+    session: Session, msg: ParsedMessage, domain: str
+) -> Optional[Company]:
+    """Create a tracked company from the sender, reusing one by slug. None if unknowable.
 
     The sender's domain is stored as the tracked domain, so matching works from here on
     without a separate trip to the Add page.
     """
     name = matchers.company_from_sender(msg.from_addr, domain)
+    if matchers.is_ats_brand_name(name):
+        # The From header carries the platform's brand and nothing else, and the caller
+        # already failed to find a tracked employer named in the body. There is no
+        # employer to record here, only a vendor.
+        return None
     slug = slugify(name)
     # A shared platform's domain is never the employer's, so don't claim it for them.
     tracked_domain = "" if matchers.is_ats_domain(domain) else domain
@@ -209,9 +255,16 @@ def _company_from_email(session: Session, msg: ParsedMessage, domain: str) -> Co
 
 
 def _create_application_from_email(
-    session: Session, company: Company, msg: ParsedMessage
+    session: Session,
+    company: Company,
+    msg: ParsedMessage,
+    status: AppStatus = AppStatus.confirmed,
 ) -> Application:
-    """Record an application the confirmation email proves exists."""
+    """Record an application the email proves exists, at the stage the email proves.
+
+    An interview invitation for an untracked role lands straight in ``interviewing``:
+    filing it as ``confirmed`` would lose the very fact that made it worth catching.
+    """
     title = matchers.extract_role_title(msg.subject, msg.snippet, company.name)
     job = Job(
         source="email",
@@ -229,9 +282,13 @@ def _create_application_from_email(
 
     app = Application(
         job_id=job.id,
-        status=AppStatus.confirmed,
+        status=status,
         applied_at=msg.received_at or utcnow(),
-        notes="Added automatically from a confirmation email.",
+        notes=(
+            "Added automatically from an interview invitation."
+            if status is AppStatus.interviewing
+            else "Added automatically from a confirmation email."
+        ),
     )
     session.add(app)
     session.commit()
@@ -265,6 +322,48 @@ def _names_an_untracked_role(
     return True
 
 
+# Stages an incoming email is allowed to advance. An offer or a rejection is further along
+# than anything the poller can infer, so a late assessment reminder must not walk it back.
+_ADVANCEABLE = (
+    AppStatus.interested,
+    AppStatus.applied,
+    AppStatus.confirmed,
+    AppStatus.interviewing,
+)
+
+
+def _company_behind_platform(
+    session: Session, domain: str, msg: ParsedMessage
+) -> Optional[Company]:
+    """Work out which employer a shared platform is mailing for.
+
+    Three readings of the message, weakest last. A JPMorgan HireVue invitation got past
+    all of the earlier exact-slug matching: HireVue signs its own name, and the platforms
+    that do sign the employer's write it differently from the job posting the application
+    was created from ("JPMorganChase" against a company tracked as "J.P. Morgan").
+    """
+    name = matchers.company_from_sender(msg.from_addr, domain)
+    companies = session.exec(select(Company)).all()
+
+    if not matchers.is_ats_brand_name(name):
+        slug = slugify(name)
+        for company in companies:
+            if company.slug == slug:
+                return company
+        for company in companies:
+            if matchers.company_name_matches(company.name, name):
+                return company
+
+    # The header named the platform, not the employer; the employer is in the subject
+    # instead. Prefer the longest name that appears, so a company tracked as "DBS" can't
+    # take mail that names "DBS Bank Technology" from one tracked under the fuller name.
+    text = f"{msg.subject or ''} {msg.snippet or ''}"
+    named = [c for c in companies if matchers.name_in_text(c.name, text)]
+    if named:
+        return max(named, key=lambda c: len(matchers.normalize_company_name(c.name)))
+    return None
+
+
 def _match_company(
     session: Session, domain: str, msg: Optional[ParsedMessage] = None
 ) -> Optional[Company]:
@@ -279,10 +378,7 @@ def _match_company(
     if matchers.is_ats_domain(domain):
         if msg is None:
             return None
-        name = matchers.company_from_sender(msg.from_addr, domain)
-        return session.exec(
-            select(Company).where(Company.slug == slugify(name))
-        ).first()
+        return _company_behind_platform(session, domain, msg)
 
     for company in session.exec(select(Company)).all():
         # Skip any ATS domain saved against a company; it isn't theirs to claim.
@@ -459,64 +555,104 @@ def poll_once() -> dict[str, Any]:
     }
 
 
+# Gmail's ``q`` has a length ceiling, and the phrase list alone already spends most of it,
+# so the sweep is several searches rather than one OR of everything. Each covers the same
+# window; ``scan_recent`` dedupes where they overlap.
+_MAX_QUERY_TERMS = 24
+
+
+def _scan_queries(days: int) -> list[str]:
+    """Searches covering the mail that can move an application's stage.
+
+    Phrases are taken from the matchers themselves and searched over the whole message
+    rather than the subject: a subject-keyword filter missed Citi entirely — its subject
+    is "Thank you for your interest in Citi!", with the proof only in the body — and any
+    phrase added to the matchers would otherwise have to be duplicated here.
+    """
+    window = f"newer_than:{days}d"
+    terms = list(dict.fromkeys(
+        matchers.CONFIRMATION_PATTERNS + matchers.INTERVIEW_PATTERNS
+    ))
+    queries = [
+        f"{window} ({' OR '.join(chr(34) + t + chr(34) for t in chunk)})"
+        for chunk in (
+            terms[i : i + _MAX_QUERY_TERMS]
+            for i in range(0, len(terms), _MAX_QUERY_TERMS)
+        )
+    ]
+    # Assessment vendors are swept by sender too. Their subjects vary wildly, but nothing
+    # they send is uninteresting, and this is the mail the sweep was widened to catch.
+    senders = sorted(matchers.ASSESSMENT_DOMAINS)
+    queries += [
+        f"{window} ({' OR '.join('from:' + d for d in chunk)})"
+        for chunk in (
+            senders[i : i + _MAX_QUERY_TERMS]
+            for i in range(0, len(senders), _MAX_QUERY_TERMS)
+        )
+    ]
+    return queries
+
+
 def scan_recent(days: int = 30, limit: int = 400) -> dict[str, Any]:
-    """One-off sweep of recent mail for confirmations the incremental poll never saw.
+    """One-off sweep of recent mail for stage changes the incremental poll never saw.
 
     ``poll_once`` only looks forward from the stored history id, so anything that arrived
     before Gmail was connected — or while the poller was broken — is invisible to it. The
-    search is narrowed to application-shaped subjects rather than every message in the
+    search is narrowed to application-shaped mail rather than every message in the
     window, which keeps this to a few dozen API calls instead of thousands.
     """
     service = get_service()
     if service is None:
         return {"status": "gmail_not_configured"}
 
-    # Built from the confirmation phrases themselves, and searched over the whole message
-    # rather than the subject. A subject-keyword filter missed Citi entirely — its subject
-    # is "Thank you for your interest in Citi!", with the proof only in the body — and any
-    # phrase added to CONFIRMATION_PATTERNS would otherwise have to be duplicated here.
-    phrases = " OR ".join(f'"{p}"' for p in matchers.CONFIRMATION_PATTERNS)
-    query = f"newer_than:{days}d ({phrases})"
     # (id, payload) not ORM rows -- see _deliver.
     notifications: list[tuple[int, str]] = []
     scanned = skipped = 0
+    seen: set[str] = set()
 
     with session_scope() as session:
-        page_token = None
-        while scanned < limit:
-            resp = (
-                service.users()
-                .messages()
-                .list(userId="me", q=query, maxResults=100, pageToken=page_token)
-                .execute()
-            )
-            for ref in resp.get("messages", []):
-                if scanned >= limit:
-                    break
-                try:
-                    msg = (
-                        service.users()
-                        .messages()
-                        .get(
-                            userId="me",
-                            id=ref["id"],
-                            format="metadata",
-                            metadataHeaders=["From", "Subject"],
+        for query in _scan_queries(days):
+            page_token = None
+            while scanned < limit:
+                resp = (
+                    service.users()
+                    .messages()
+                    .list(userId="me", q=query, maxResults=100, pageToken=page_token)
+                    .execute()
+                )
+                for ref in resp.get("messages", []):
+                    if scanned >= limit:
+                        break
+                    # The queries overlap — an assessment vendor's mail matches the
+                    # phrase sweep too — and re-fetching a message costs an API call for
+                    # a result process_message would discard as already handled.
+                    if ref["id"] in seen:
+                        continue
+                    seen.add(ref["id"])
+                    try:
+                        msg = (
+                            service.users()
+                            .messages()
+                            .get(
+                                userId="me",
+                                id=ref["id"],
+                                format="metadata",
+                                metadataHeaders=["From", "Subject"],
+                            )
+                            .execute()
                         )
-                        .execute()
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    if not _is_gone(exc):
-                        raise
-                    skipped += 1
-                    continue
-                scanned += 1
-                note = process_message(session, _parse_api_message(msg))
-                if note:
-                    notifications.append((note.id, note.payload))
-            page_token = resp.get("nextPageToken")
-            if not page_token:
-                break
+                    except Exception as exc:  # noqa: BLE001
+                        if not _is_gone(exc):
+                            raise
+                        skipped += 1
+                        continue
+                    scanned += 1
+                    note = process_message(session, _parse_api_message(msg))
+                    if note:
+                        notifications.append((note.id, note.payload))
+                page_token = resp.get("nextPageToken")
+                if not page_token:
+                    break
 
     delivered = _deliver(notifications)
     return {

@@ -51,9 +51,10 @@ def test_confirmation_flips_application(session):
     assert note is not None and note.type == "confirmation"
 
 
-def test_non_confirmation_creates_company_email(session):
+def test_unclassifiable_mail_creates_company_email(session):
+    """Anything the matchers can't read is queued for the user, stage untouched."""
     _company, _job, app = _seed(session)
-    note = process_message(session, _msg("Interview invitation"))
+    note = process_message(session, _msg("A quick update on your candidacy"))
     session.refresh(app)
     assert app.status == AppStatus.applied  # unchanged; user will classify
     assert note is not None and note.type == "company_email"
@@ -307,3 +308,146 @@ def test_duplicate_message_ignored(session):
     second = process_message(session, _msg("Application received", mid="dup"))
     assert first is not None
     assert second is None
+
+
+# --- interview / assessment invitations -------------------------------------------------
+#
+# All of these are the JPMorgan HireVue invitation that went missing, and the ways it could
+# have gone missing: the platform signs the mail, and when it signs the employer instead it
+# spells the name differently from the job posting the application came from.
+
+def _seed_named(session, name, slug, domain, status=AppStatus.applied, title="Grad SWE"):
+    company = Company(name=name, slug=slug, email_domains=domain, sector=Sector.finance)
+    session.add(company)
+    session.commit()
+    session.refresh(company)
+    job = Job(
+        source="manual", source_job_id=slug + "-1", title=title,
+        company_name=name, company_id=company.id, apply_url="http://x",
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    app = Application(job_id=job.id, status=status)
+    session.add(app)
+    session.commit()
+    session.refresh(app)
+    return company, app
+
+
+def test_platform_spelling_of_the_employer_still_finds_the_company(session):
+    """Tracked as "J.P. Morgan"; HireVue signs "JPMorganChase". Slug equality missed it."""
+    _company, app = _seed_named(session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com")
+    note = process_message(session, _msg(
+        "Complete your video interview",
+        from_addr="JPMorganChase Recruiting <no-reply@hirevue.com>",
+        mid="hv1",
+    ))
+    session.refresh(app)
+    assert app.status == AppStatus.interviewing
+    assert note is not None and note.type == "interview"
+
+
+def test_platform_signing_its_own_name_falls_back_to_the_subject(session):
+    """"HireVue <no-reply@hirevue.com>" names nobody; the employer is in the subject."""
+    _company, app = _seed_named(session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com")
+    note = process_message(session, _msg(
+        "Your J.P. Morgan video interview is ready",
+        from_addr="HireVue <no-reply@hirevue.com>",
+        mid="hv2",
+    ))
+    session.refresh(app)
+    assert app.status == AppStatus.interviewing
+    assert note is not None and note.type == "interview"
+
+
+def test_the_platform_never_becomes_an_employer(session):
+    """Filing this under a new company called "HireVue" is worse than not filing it."""
+    note = process_message(session, _msg(
+        "Complete your video interview",
+        from_addr="HireVue <no-reply@hirevue.com>",
+        mid="hv3",
+    ))
+    from sqlmodel import select as _select
+    assert note is None
+    assert session.exec(_select(Company)).all() == []
+    assert _apps(session) == []
+
+
+def test_the_vendors_domain_is_enough_without_invitation_wording(session):
+    """Assessment vendors word their subjects freely; nothing else mails from there."""
+    _company, app = _seed_named(session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com")
+    process_message(session, _msg(
+        "Action required by Friday",
+        from_addr="JPMorganChase <noreply@hirevue.com>",
+        mid="hv4",
+    ))
+    session.refresh(app)
+    assert app.status == AppStatus.interviewing
+
+
+def test_an_invitation_outranks_the_confirmation_wording_it_repeats(session):
+    """These mails restate "thank you for applying"; the later stage has to win."""
+    _company, app = _seed_named(session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com")
+    process_message(session, _msg(
+        "Thank you for applying — please complete your video interview",
+        from_addr="Careers <campus@jpmorgan.com>",
+        mid="hv5",
+    ))
+    session.refresh(app)
+    assert app.status == AppStatus.interviewing
+
+
+def test_a_rejection_that_mentions_the_interview_does_not_advance_the_stage(session):
+    """"Following your video interview…" matches every invitation phrase there is."""
+    _company, app = _seed_named(session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com")
+    note = process_message(session, ParsedMessage(
+        "hv6", "t1", "JPMorganChase <no-reply@hirevue.com>",
+        "An update on your candidacy",
+        "Unfortunately, following your video interview we will not be moving forward.",
+        None,
+    ))
+    session.refresh(app)
+    assert app.status == AppStatus.applied          # left for the user to classify
+    assert note is not None and note.type == "company_email"
+
+
+def test_a_vendors_login_code_is_not_an_interview(session):
+    """The one thing an assessment vendor sends that is not about sitting one."""
+    _company, app = _seed_named(session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com")
+    note = process_message(session, _msg(
+        "Your verification code is 481920",
+        from_addr="JPMorganChase <no-reply@hirevue.com>",
+        mid="hv7",
+    ))
+    session.refresh(app)
+    assert note is None
+    assert app.status == AppStatus.applied
+
+
+def test_an_invitation_for_an_untracked_role_lands_at_the_interview_stage(session):
+    """Filing it as "confirmed" would lose the fact that made it worth catching."""
+    company, existing = _seed_named(session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com")
+    process_message(session, _msg(
+        "Your application for Quantitative Research Analyst — video interview invitation",
+        from_addr="Careers <campus@jpmorgan.com>",
+        mid="hv8",
+    ))
+    session.refresh(existing)
+    assert existing.status == AppStatus.applied     # untouched
+    new = [a for a in _apps(session) if a.id != existing.id]
+    assert len(new) == 1 and new[0].status == AppStatus.interviewing
+
+
+def test_an_offer_is_not_walked_back_by_a_late_reminder(session):
+    """Stages past what the poller can infer are the user's; don't overwrite them."""
+    _company, app = _seed_named(
+        session, "J.P. Morgan", "j-p-morgan", "jpmorgan.com", status=AppStatus.offer
+    )
+    process_message(session, _msg(
+        "Reminder: complete your video interview",
+        from_addr="JPMorganChase <no-reply@hirevue.com>",
+        mid="hv9",
+    ))
+    session.refresh(app)
+    assert app.status == AppStatus.offer
