@@ -172,6 +172,15 @@ _PRACTICE_PLATFORMS = frozenset({
     "hackerrank.com", "codility.com", "shl.com", "testgorilla.com", "amcat.co",
 })
 
+# Free mail providers. Anyone can write from these, so the domain says nothing about who
+# is hiring: saved against one company, gmail.com would hand that company every Gmail
+# sender there is, the user's own address included.
+WEBMAIL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+    "yahoo.com", "yahoo.com.sg", "ymail.com", "icloud.com", "me.com", "mac.com",
+    "aol.com", "proton.me", "protonmail.com", "gmx.com",
+})
+
 _EMAIL_RE = re.compile(r"[\w.+-]+@([\w-]+\.[\w.-]+)")
 
 
@@ -192,6 +201,11 @@ def _domain_in(domain: str, group: frozenset[str]) -> bool:
 def is_ats_domain(domain: str) -> bool:
     """True if the domain belongs to a shared recruiting platform, not one employer."""
     return _domain_in(domain, ATS_DOMAINS)
+
+
+def is_webmail_domain(domain: str) -> bool:
+    """True for free mail providers, whose domain identifies no employer."""
+    return _domain_in(domain, WEBMAIL_DOMAINS)
 
 
 def is_assessment_domain(domain: str) -> bool:

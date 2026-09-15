@@ -506,3 +506,95 @@ def test_an_offer_is_not_walked_back_by_a_late_reminder(session):
     ))
     session.refresh(app)
     assert app.status == AppStatus.offer
+
+
+# --- mail the user writes, and personal mailboxes ---------------------------------------
+
+def _events(session):
+    from sqlmodel import select as _select
+    from app.models import EmailEvent
+    return session.exec(_select(EmailEvent)).all()
+
+
+def test_the_users_own_reply_never_pings(session):
+    """Two replies in one recruiter thread each pinged Telegram as company mail."""
+    _seed(session)
+    note = process_message(session, ParsedMessage(
+        "sent1", "t1", "Shi Kai <shikai@acme.com>", "Re: Interview invitation", "", None,
+        label_ids=["SENT"],
+    ))
+    assert note is None
+    assert _events(session) == []            # not even queued for classification
+
+
+def test_a_draft_is_not_mail_received(session):
+    """Drafts reach the history feed once per autosave."""
+    _seed(session)
+    assert process_message(session, ParsedMessage(
+        "draft1", "t1", "Shi Kai <shikai@acme.com>", "Re: Interview invitation", "", None,
+        label_ids=["DRAFT"],
+    )) is None
+    assert _events(session) == []
+
+
+def test_received_mail_with_other_labels_is_still_processed(session):
+    _seed(session)
+    note = process_message(session, ParsedMessage(
+        "in1", "t1", "Careers <no-reply@acme.com>", "A quick update on your candidacy", "",
+        None, label_ids=["INBOX", "UNREAD", "CATEGORY_UPDATES"],
+    ))
+    assert note is not None and note.type == "company_email"
+
+
+def test_gmail_saved_on_a_company_does_not_claim_every_gmail_sender(session):
+    """Stored against one company, gmail.com matched every Gmail sender to it."""
+    stale = Company(name="Tiny Startup", slug="tiny-startup", email_domains="gmail.com")
+    session.add(stale)
+    session.commit()
+    note = process_message(session, _msg(
+        "Re: Congrats! Next-round Interview", from_addr="A Friend <friend@gmail.com>",
+        mid="wm1",
+    ))
+    assert note is None
+
+
+def test_a_recruiter_on_personal_gmail_is_matched_by_display_name(session):
+    company, _job, _app = _seed(session)            # "Acme Tech"
+    note = process_message(session, _msg(
+        "A quick update on your candidacy",
+        from_addr="Acme Tech Recruitment <acmetech.hr@gmail.com>",
+        mid="wm2",
+    ))
+    assert note is not None and note.type == "company_email"
+    assert _events(session)[0].matched_company_id == company.id
+
+
+def test_a_persons_name_on_gmail_does_not_loosely_match_a_company(session):
+    """"Grace" is a person, however much it looks like "Grace Fashion"."""
+    session.add(Company(
+        name="Grace Fashion", slug="grace-fashion", email_domains="gracefashion.com",
+    ))
+    session.commit()
+    assert process_message(session, _msg(
+        "Dinner on Friday?", from_addr="Grace <grace@gmail.com>", mid="wm3",
+    )) is None
+
+
+def test_a_confirmation_from_a_recruiters_gmail_does_not_save_gmail(session):
+    from sqlmodel import select as _select
+    process_message(session, _msg(
+        "Thank you for applying to Data Analyst",
+        from_addr="Monee Talent <monee.hr@gmail.com>",
+        mid="wm4",
+    ))
+    company = session.exec(_select(Company)).one()
+    assert company.name == "Monee"
+    assert company.email_domains == ""        # gmail.com is nobody's employer domain
+
+
+def test_no_company_is_named_after_the_mail_provider(session):
+    from sqlmodel import select as _select
+    assert process_message(session, _msg(
+        "Thank you for applying to Data Analyst", from_addr="someone@gmail.com", mid="wm5",
+    )) is None
+    assert session.exec(_select(Company)).all() == []

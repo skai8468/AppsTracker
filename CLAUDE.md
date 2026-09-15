@@ -69,7 +69,11 @@ against `gmail.googleapis.com` directly — no MCP server, no connector, no thir
 - A confirmation from an untracked company still creates the company and the application
   (`process_message` in `poller.py`), gated by `settings.auto_track_from_email` (default
   on). `matchers.is_ats_domain` stops a shared ATS domain (Workday, Greenhouse, etc.) being
-  claimed as that employer's own tracked domain.
+  claimed as that employer's own tracked domain. `matchers.is_webmail_domain` does the same for
+  gmail.com and other free mail providers, whose senders match by display name only.
+- Mail the user writes (Gmail `SENT` / `DRAFT` labels) is skipped before any matching.
+  Gmail's history feed reports it as added mail, so replies to a recruiter used to ping
+  Telegram as mail from that company.
 
 **The token file is fragile and load-bearing.** Several past bugs came from corrupting it.
 `_write_token` writes to a temp file and `os.replace`s it, because a truncating write that

@@ -119,3 +119,10 @@ def test_assessment_vendors_are_separable_from_other_shared_senders():
     assert matchers.is_assessment_domain("mail.hirevue.com")
     assert not matchers.is_assessment_domain("greenhouse.io")   # an ATS, not a test
     assert matchers.is_ats_domain("greenhouse.io")
+
+
+def test_webmail_providers_identify_no_employer():
+    assert matchers.is_webmail_domain("gmail.com")
+    assert matchers.is_webmail_domain("outlook.com")
+    assert not matchers.is_webmail_domain("tiktok.com")
+    assert not matchers.is_ats_domain("gmail.com")      # separate rule, same treatment

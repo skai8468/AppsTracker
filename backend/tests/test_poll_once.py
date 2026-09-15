@@ -77,10 +77,11 @@ class _Service:
         return self._users
 
 
-def _message(mid, from_addr, subject):
+def _message(mid, from_addr, subject, labels=()):
     return {
         "id": mid,
         "threadId": f"t-{mid}",
+        "labelIds": list(labels),
         "snippet": "",
         "internalDate": "1756000000000",
         "payload": {"headers": [
@@ -211,3 +212,11 @@ def test_transient_error_does_not_advance_history(wired, monkeypatch):
     with pytest.raises(Exception):
         poller.poll_once()
     assert wired["gmail_history_id"] == "100"      # unchanged, will retry
+
+
+def test_labels_are_read_off_the_api_message():
+    """Skipping sent mail depends on the labels surviving the parse."""
+    parsed = poller._parse_api_message(
+        _message("m", "Shi Kai <shikai@gmail.com>", "Re: hi", labels=["SENT", "INBOX"])
+    )
+    assert parsed.label_ids == {"SENT", "INBOX"}

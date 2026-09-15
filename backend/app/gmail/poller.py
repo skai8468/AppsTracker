@@ -44,6 +44,9 @@ log = logging.getLogger(__name__)
 
 HISTORY_KEY = "gmail_history_id"
 
+# Labels Gmail puts on mail the user wrote rather than received.
+_OWN_MAIL_LABELS = frozenset({"SENT", "DRAFT"})
+
 
 # --- parsed message shape (decoupled from the Gmail API payload) -----------------------
 
@@ -56,6 +59,7 @@ class ParsedMessage:
         subject: str,
         snippet: str,
         received_at: Optional[datetime],
+        label_ids: Optional[list[str]] = None,
     ):
         self.message_id = message_id
         self.thread_id = thread_id
@@ -63,6 +67,7 @@ class ParsedMessage:
         self.subject = subject
         self.snippet = snippet
         self.received_at = received_at
+        self.label_ids = set(label_ids or ())
 
 
 def _header(headers: list[dict[str, str]], name: str) -> str:
@@ -88,6 +93,7 @@ def _parse_api_message(msg: dict[str, Any]) -> ParsedMessage:
         subject=_header(headers, "Subject"),
         snippet=msg.get("snippet", ""),
         received_at=received,
+        label_ids=msg.get("labelIds", []),
     )
 
 
@@ -95,6 +101,11 @@ def _parse_api_message(msg: dict[str, Any]) -> ParsedMessage:
 
 def process_message(session: Session, msg: ParsedMessage) -> Optional[Notification]:
     """Match one message to a company and act. Returns a Notification to send, or None."""
+    if msg.label_ids & _OWN_MAIL_LABELS:
+        # Gmail's history feed reports everything added to the mailbox, including what
+        # the user writes. Two replies in a TikTok interview thread each pinged Telegram
+        # as incoming company mail. Drafts arrive the same way, once per autosave.
+        return None
     if session.exec(
         select(EmailEvent).where(EmailEvent.gmail_message_id == msg.message_id)
     ).first():
@@ -247,9 +258,17 @@ def _company_from_email(
         # already failed to find a tracked employer named in the body. There is no
         # employer to record here, only a vendor.
         return None
+    if matchers.is_webmail_domain(domain) and slugify(name) == slugify(
+        matchers.company_from_sender("", domain)
+    ):
+        # No display name worth reading, so the only name on offer is the mail
+        # provider's. A company called "Gmail" would match nobody real.
+        return None
     slug = slugify(name)
-    # A shared platform's domain is never the employer's, so don't claim it for them.
-    tracked_domain = "" if matchers.is_ats_domain(domain) else domain
+    # Neither a shared platform's domain nor a mail provider's is the employer's, so
+    # don't claim it for them.
+    shared = matchers.is_ats_domain(domain) or matchers.is_webmail_domain(domain)
+    tracked_domain = "" if shared else domain
 
     existing = session.exec(select(Company).where(Company.slug == slug)).first()
     if existing is not None:
@@ -376,6 +395,27 @@ def _company_behind_platform(
     return None
 
 
+def _company_signing_webmail(
+    session: Session, domain: str, msg: ParsedMessage
+) -> Optional[Company]:
+    """Employer behind a recruiter's personal mailbox, from the display name alone.
+
+    Stricter than the platform path on purpose. Personal mailboxes mostly belong to
+    people, whose names collide with company names under a loose comparison ("Grace"
+    against "Grace Fashion"), so only an exact match of the normalised name counts. The
+    subject is never read: a friend's mail that mentions Grab is not mail from Grab.
+    """
+    wanted = matchers.normalize_company_name(
+        matchers.company_from_sender(msg.from_addr, domain)
+    )
+    if not wanted:
+        return None
+    for company in session.exec(select(Company)).all():
+        if matchers.normalize_company_name(company.name) == wanted:
+            return company
+    return None
+
+
 def _match_company(
     session: Session, domain: str, msg: Optional[ParsedMessage] = None
 ) -> Optional[Company]:
@@ -386,11 +426,19 @@ def _match_company(
     domain would hand the next employer's mail to whoever was tracked first, so they're
     resolved by the sender's display name instead. This also neutralises an ATS domain
     already saved against a company before this rule existed.
+
+    Free mail providers are shared the same way, and are checked before any stored
+    domain for the same reason: gmail.com saved against one company must not claim every
+    Gmail sender.
     """
     if matchers.is_ats_domain(domain):
         if msg is None:
             return None
         return _company_behind_platform(session, domain, msg)
+    if matchers.is_webmail_domain(domain):
+        if msg is None:
+            return None
+        return _company_signing_webmail(session, domain, msg)
 
     for company in session.exec(select(Company)).all():
         # Skip any ATS domain saved against a company; it isn't theirs to claim.
