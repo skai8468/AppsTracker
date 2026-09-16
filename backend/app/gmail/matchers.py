@@ -320,6 +320,8 @@ _TITLE_PATTERNS = (
     r"thank you for (?:your interest and )?applying (?:to|for)(?: the)?\s+(.+)",
     r"thanks for applying (?:to|for)(?: the)?\s+(.+)",
     r"we(?:'ve| have) received your application (?:to|for)(?: the)?\s+(.+)",
+    # Workday: "Confirmation of application received for 26WD100994 Intern, ...".
+    r"application received for(?: the)?\s+(.+)",
     r"your application (?:to|for)(?: the)?\s+(.+)",
     r"application (?:received|submitted)(?:\s*[:\-–]\s*)(.+)",
     r"application for(?: the)?\s+(.+)",
@@ -335,6 +337,15 @@ _TITLE_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Workday wraps a posting title in its requisition code and the posting's status:
+# "26WD100994 Intern, Product Manager [PSET-Access-PM] (Open)". A code has to mix
+# letters with a run of four digits, so a year that opens a real title
+# ("2027 Software Engineer Program") is left alone.
+_REQ_CODE_PREFIX_RE = re.compile(r"^(?=\S*[A-Za-z])(?=\S*\d{4})[A-Za-z0-9-]+\s+")
+_POSTING_STATUS_RE = re.compile(r"\s*\((?:open|closed|filled|evergreen)\)\s*$",
+    re.IGNORECASE,
+)
+
 # Function-mailbox words that aren't part of the employer's name. This does the real work
 # for shared-ATS senders, where the display name is all we have to identify the employer:
 # "EY Talent Attraction and Acquisition Team" has to reduce to "EY".
@@ -342,7 +353,9 @@ _SENDER_NOISE_RE = re.compile(
     r"\b(?:recruit(?:ing|ment|er)?|careers?|talent|attraction|acquisition|hiring|hire"
     r"|jobs?|human\s+resources|hr|people\s+team|campus|university\s+relations"
     r"|early\s+careers?|graduate\s+programme|no[\s-]?reply|do[\s-]?not[\s-]?reply|noreply"
-    r"|notifications?|team|via|support|mailer|info|admin|onboarding)\b",
+    r"|auto[\s-]?notifications?|notifications?|team|via|support|mailer|info|admin"
+    r"|onboarding|interviews?|assessments?|candidates?|applications?|system|hello"
+    r"|contact|alerts?|updates?)\b",
     re.IGNORECASE,
 )
 
@@ -473,6 +486,7 @@ def extract_role_title(
             # ("Audit | New Analyst", "Services – Full-Time Analyst, Singapore").
             title = re.split(r"[.!?\n]", title)[0]
             title = _TITLE_TAIL_RE.sub("", title).strip(" ,;:-–—\"'!")
+            title = _POSTING_STATUS_RE.sub("", _REQ_CODE_PREFIX_RE.sub("", title)).strip()
             if not (2 < len(title) <= 120):
                 continue
             if company and title_is_the_employer(title, company):
@@ -481,15 +495,42 @@ def extract_role_title(
     return None
 
 
+_LOCAL_PART_RE = re.compile(r"([\w.+-]+)@")
+
+
+def _clean_sender_name(raw: str) -> str:
+    """A sender name with the mailbox boilerplate removed, or "" if nothing is left."""
+    name = _SENDER_NOISE_RE.sub(" ", raw)
+    name = _DANGLING_RE.sub(" ", name)
+    name = re.sub(r"\s{2,}", " ", name).strip(" -|,·•&+")
+    return name if len(name) > 1 and not _EMAIL_RE.search(name) else ""
+
+
 def company_from_sender(from_header: str, domain: str) -> str:
-    """Employer name from the From display name, falling back to the domain."""
+    """Employer name from the From header, falling back to the domain.
+
+    Readings in order: the display name, then (on shared platforms only) the mailbox
+    name, then the domain. Workday mails as ``<tenant>@myworkday.com`` and the tenant is
+    the employer. Razer's confirmation came from ``razer@myworkday.com`` with no display
+    name at all, and Autodesk's signed itself "AutoNotification workday"; both reduced to
+    the platform, so Razer's was dropped and Autodesk's was filed under a company named
+    after the notification mailbox.
+    """
     m = _DISPLAY_NAME_RE.match(from_header or "")
     if m:
-        name = _SENDER_NOISE_RE.sub(" ", m.group(1))
-        name = _DANGLING_RE.sub(" ", name)
-        name = re.sub(r"\s{2,}", " ", name).strip(" -|,·•&+")
-        if len(name) > 1 and not _EMAIL_RE.search(name):
+        name = _clean_sender_name(m.group(1))
+        # A display name that is only the platform's brand says nothing about who is
+        # hiring, so the mailbox name gets a chance before the domain does.
+        if name and normalize_company_name(name):
             return name
+    if is_ats_domain(domain):
+        # Only on shared platforms: at an employer's own domain the mailbox is a
+        # person or a team ("jane@acme.com"), never the employer.
+        local = _LOCAL_PART_RE.search(from_header or "")
+        if local:
+            name = _clean_sender_name(re.sub(r"[._+-]+", " ", local.group(1)))
+            if name and normalize_company_name(name):
+                return name.title()
     # "careers.tiktok.com" -> "Tiktok": drop the public suffix and any leading label.
     parts = [p for p in (domain or "").split(".") if p]
     if not parts:

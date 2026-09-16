@@ -126,3 +126,55 @@ def test_webmail_providers_identify_no_employer():
     assert matchers.is_webmail_domain("outlook.com")
     assert not matchers.is_webmail_domain("tiktok.com")
     assert not matchers.is_ats_domain("gmail.com")      # separate rule, same treatment
+
+
+# --- Workday: the employer is the mailbox, not the display name -------------------------
+#
+# Both from real mail. Razer's confirmation had no display name and was dropped; Autodesk's
+# was filed under a company called "AutoNotification workday" with no role.
+
+RAZER_FROM = "razer@myworkday.com"
+AUTODESK_FROM = "AutoNotification workday <autodesk@myworkday.com>"
+AUTODESK_SUBJECT = (
+    "Confirmation of application received for 26WD100994 Intern, Product Manager "
+    "[PSET-Access-PM] (Open)"
+)
+
+
+def test_a_workday_tenant_names_the_employer_when_nothing_else_does():
+    assert matchers.company_from_sender(RAZER_FROM, "myworkday.com") == "Razer"
+
+
+def test_a_notification_mailbox_name_gives_way_to_the_tenant():
+    assert matchers.company_from_sender(AUTODESK_FROM, "myworkday.com") == "Autodesk"
+
+
+def test_a_generic_platform_mailbox_names_nobody():
+    """"interviews@hirevue.com" must not become a company called Interviews."""
+    name = matchers.company_from_sender(
+        "HireVue <interviews@hirevue.com>", "hirevue.com"
+    )
+    assert matchers.is_ats_brand_name(name)
+
+
+def test_the_mailbox_is_never_read_at_an_employers_own_domain():
+    """At acme.com the mailbox is a person, not the employer."""
+    assert matchers.company_from_sender("jane@acme.com", "acme.com") == "Acme"
+
+
+def test_workday_confirmation_title_loses_its_code_and_status():
+    assert matchers.extract_role_title(AUTODESK_SUBJECT, "", "Autodesk") == (
+        "Intern, Product Manager [PSET-Access-PM]"
+    )
+
+
+def test_a_year_opening_a_title_is_not_mistaken_for_a_code():
+    assert matchers.extract_role_title(
+        "Application received for 2027 Software Engineer Program"
+    ) == "2027 Software Engineer Program"
+
+
+def test_razer_confirmation_title():
+    assert matchers.extract_role_title(
+        "We've got your application for Product Developer Intern !", "", "Razer"
+    ) == "Product Developer Intern"
