@@ -42,6 +42,10 @@ CONFIRMATION_PATTERNS = (
     "applied for the role",
     "interest in joining",
     "successfully received your",
+    # Apple's subject is only "Thanks for your interest in Apple."; the proof is the body's
+    # "We just received your resume for the following role: ...".
+    "received your resume",
+    "received your cv",
 )
 
 # Transactional mail that arrives from a tracked company's domain but says nothing about
@@ -184,6 +188,24 @@ WEBMAIL_DOMAINS = frozenset({
 _EMAIL_RE = re.compile(r"[\w.+-]+@([\w-]+\.[\w.-]+)")
 
 
+# Second-level labels that sit under a country code: "tech.gov.sg", "dbs.com.sg".
+_SECOND_LEVEL_LABELS = frozenset({"com", "co", "org", "net", "gov", "edu"})
+
+
+def registrable_domain(domain: str) -> str:
+    """The employer-level part of a sender domain: "email.apple.com" -> "apple.com".
+
+    Confirmations come from bulk-mail subdomains, while recruiters write from the bare
+    domain. Tracking the subdomain Apple's confirmation came from would have missed every
+    later email from an Apple recruiter.
+    """
+    parts = [p for p in (domain or "").lower().strip().split(".") if p]
+    if len(parts) <= 2:
+        return ".".join(parts)
+    keep = 3 if parts[-2] in _SECOND_LEVEL_LABELS else 2
+    return ".".join(parts[-keep:])
+
+
 def extract_domain(from_header: str) -> str | None:
     """Pull the domain out of a From header like 'Careers <no-reply@dbs.com>'."""
     m = _EMAIL_RE.search(from_header or "")
@@ -320,6 +342,10 @@ _TITLE_PATTERNS = (
     r"thank you for (?:your interest and )?applying (?:to|for)(?: the)?\s+(.+)",
     r"thanks for applying (?:to|for)(?: the)?\s+(.+)",
     r"we(?:'ve| have) received your application (?:to|for)(?: the)?\s+(.+)",
+    # Apple: "We just received your resume for the following role: 2027 Apple ...".
+    r"received your (?:resume|cv|application) for the following"
+    r" (?:role|position|job)s?\s*:?\s*(.+)",
+    r"received your (?:resume|cv) for(?: the)?\s+(.+)",
     # Workday: "Confirmation of application received for 26WD100994 Intern, ...".
     r"application received for(?: the)?\s+(.+)",
     r"your application (?:to|for)(?: the)?\s+(.+)",
@@ -342,6 +368,9 @@ _TITLE_TAIL_RE = re.compile(
 # letters with a run of four digits, so a year that opens a real title
 # ("2027 Software Engineer Program") is left alone.
 _REQ_CODE_PREFIX_RE = re.compile(r"^(?=\S*[A-Za-z])(?=\S*\d{4})[A-Za-z0-9-]+\s+")
+# Apple appends the posting number: "... Information Systems and Technology 200675982".
+# Six digits at least, so a title that ends in its intake year keeps it.
+_REQ_CODE_SUFFIX_RE = re.compile(r"\s+\d{6,}$")
 _POSTING_STATUS_RE = re.compile(r"\s*\((?:open|closed|filled|evergreen)\)\s*$",
     re.IGNORECASE,
 )
@@ -355,7 +384,7 @@ _SENDER_NOISE_RE = re.compile(
     r"|early\s+careers?|graduate\s+programme|no[\s-]?reply|do[\s-]?not[\s-]?reply|noreply"
     r"|auto[\s-]?notifications?|notifications?|team|via|support|mailer|info|admin"
     r"|onboarding|interviews?|assessments?|candidates?|applications?|system|hello"
-    r"|contact|alerts?|updates?)\b",
+    r"|contact|alerts?|updates?|worldwide)\b",
     re.IGNORECASE,
 )
 
@@ -486,7 +515,8 @@ def extract_role_title(
             # ("Audit | New Analyst", "Services – Full-Time Analyst, Singapore").
             title = re.split(r"[.!?\n]", title)[0]
             title = _TITLE_TAIL_RE.sub("", title).strip(" ,;:-–—\"'!")
-            title = _POSTING_STATUS_RE.sub("", _REQ_CODE_PREFIX_RE.sub("", title)).strip()
+            title = _REQ_CODE_PREFIX_RE.sub("", title)
+            title = _REQ_CODE_SUFFIX_RE.sub("", _POSTING_STATUS_RE.sub("", title)).strip()
             if not (2 < len(title) <= 120):
                 continue
             if company and title_is_the_employer(title, company):
@@ -537,7 +567,7 @@ def company_from_sender(from_header: str, domain: str) -> str:
         return "Unknown"
     label = parts[-2] if len(parts) >= 2 else parts[0]
     # Handle "gs.com.sg" style: skip well-known second-level suffixes.
-    if label in {"com", "co", "org", "net", "gov", "edu"} and len(parts) >= 3:
+    if label in _SECOND_LEVEL_LABELS and len(parts) >= 3:
         label = parts[-3]
     return label.replace("-", " ").title()
 

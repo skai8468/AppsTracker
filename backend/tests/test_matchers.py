@@ -178,3 +178,41 @@ def test_razer_confirmation_title():
     assert matchers.extract_role_title(
         "We've got your application for Product Developer Intern !", "", "Razer"
     ) == "Product Developer Intern"
+
+
+# --- Apple: the proof is in the body, and the title carries the posting number ----------
+
+APPLE_FROM = "Apple Worldwide Recruiting <appleworldwiderecruiting@email.apple.com>"
+APPLE_SUBJECT = "Thanks for your interest in Apple."
+APPLE_SNIPPET = (
+    "Hi Leong, We just received your resume for the following role: 2027 Apple "
+    "Internship - Information Systems and Technology 200675982. Thanks for thinking of "
+    "us. Here's what happens next"
+)
+
+
+def test_apples_resume_receipt_is_a_confirmation():
+    assert matchers.looks_like_confirmation(APPLE_SUBJECT, APPLE_SNIPPET)
+
+
+def test_apples_title_loses_its_posting_number():
+    assert matchers.extract_role_title(APPLE_SUBJECT, APPLE_SNIPPET, "Apple") == (
+        "2027 Apple Internship - Information Systems and Technology"
+    )
+
+
+def test_worldwide_recruiting_is_a_mailbox_not_the_employer():
+    assert matchers.company_from_sender(APPLE_FROM, "email.apple.com") == "Apple"
+
+
+def test_a_title_ending_in_its_intake_year_keeps_it():
+    assert matchers.extract_role_title(
+        "Thank you for applying to Graduate Programme 2027"
+    ) == "Graduate Programme 2027"
+
+
+def test_registrable_domain():
+    assert matchers.registrable_domain("email.apple.com") == "apple.com"
+    assert matchers.registrable_domain("apple.com") == "apple.com"
+    assert matchers.registrable_domain("tech.gov.sg") == "tech.gov.sg"
+    assert matchers.registrable_domain("careers.dbs.com.sg") == "dbs.com.sg"

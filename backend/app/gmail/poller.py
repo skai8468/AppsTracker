@@ -268,7 +268,7 @@ def _company_from_email(
     # Neither a shared platform's domain nor a mail provider's is the employer's, so
     # don't claim it for them.
     shared = matchers.is_ats_domain(domain) or matchers.is_webmail_domain(domain)
-    tracked_domain = "" if shared else domain
+    tracked_domain = "" if shared else matchers.registrable_domain(domain)
 
     existing = session.exec(select(Company).where(Company.slug == slug)).first()
     if existing is not None:

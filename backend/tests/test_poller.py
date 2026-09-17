@@ -665,3 +665,44 @@ def test_a_workday_account_email_is_filed_not_tracked(session):
     assert note is None
     assert app.status == AppStatus.applied
     assert _events(session)[0].matched_company_id == _company.id
+
+
+# --- Apple ------------------------------------------------------------------------------
+
+def _apple_confirmation():
+    return ParsedMessage(
+        "apple1", "t1",
+        "Apple Worldwide Recruiting <appleworldwiderecruiting@email.apple.com>",
+        "Thanks for your interest in Apple.",
+        "Hi Leong, We just received your resume for the following role: 2027 Apple "
+        "Internship - Information Systems and Technology 200675982. Thanks for thinking "
+        "of us.",
+        None,
+    )
+
+
+def test_apples_confirmation_is_tracked(session):
+    """Real mail, dropped because the proof was only in the body."""
+    from sqlmodel import select as _select
+    note = process_message(session, _apple_confirmation())
+    company = session.exec(_select(Company)).one()
+    assert company.name == "Apple"
+    assert company.email_domains == "apple.com"    # not the bulk-mail subdomain
+    apps = _apps(session)
+    assert len(apps) == 1 and apps[0].status == AppStatus.confirmed
+    assert session.get(Job, apps[0].job_id).title == (
+        "2027 Apple Internship - Information Systems and Technology"
+    )
+    assert note is not None and note.type == "confirmation"
+
+
+def test_a_recruiter_at_the_bare_domain_reaches_the_same_company(session):
+    """Tracking email.apple.com would have missed every apple.com recruiter."""
+    process_message(session, _apple_confirmation())
+    note = process_message(session, _msg(
+        "A quick update on your candidacy",
+        from_addr="Jane Tan <jane.tan@apple.com>",
+        mid="apple2",
+    ))
+    assert note is not None and note.type == "company_email"
+    assert len(_apps(session)) == 1
