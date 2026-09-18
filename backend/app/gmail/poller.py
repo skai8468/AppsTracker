@@ -155,18 +155,26 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
         if app is None:
             app = _create_application_from_email(session, company, msg, new_stage)
             created_from_email = True
-        elif is_confirmation and not is_interview and _names_an_untracked_role(
-            session, company, msg
-        ):
+        elif is_confirmation and not is_interview:
             # A confirmation naming a role we aren't tracking is a NEW application, not a
-            # reason to flip an unrelated one — without this, applying twice at one
+            # reason to flip an unrelated one; without this, applying twice at one
             # employer would silently re-confirm the first role instead of recording the
             # second. Only a confirmation may do this. An assessment invitation is about
             # an application you already have, and names the role loosely or not at all:
             # a HackerRank test for a tracked JPMorgan application was filed as a second
             # JPMorgan role, because the employer's name in it parsed as a job title.
-            app = _create_application_from_email(session, company, msg, new_stage)
-            created_from_email = True
+            title = matchers.extract_role_title(msg.subject, msg.snippet, company.name)
+            if title and matchers.role_tokens(title, company.name):
+                named = _application_for_role(session, company, msg, title)
+                if named is None:
+                    app = _create_application_from_email(
+                        session, company, msg, new_stage
+                    )
+                    created_from_email = True
+                else:
+                    # The role decides, not recency: the most recently touched
+                    # application at the employer is often a different role.
+                    app = named
 
     event = EmailEvent(
         gmail_message_id=msg.message_id,
@@ -328,29 +336,43 @@ def _create_application_from_email(
     return app
 
 
-def _names_an_untracked_role(
-    session: Session, company: Company, msg: ParsedMessage
-) -> bool:
-    """True when the email names a role none of the company's applications match.
+# How closely a confirmation's role title must agree with a tracked one to be that
+# application: near-identical only. The old rule asked how much of a tracked title
+# appeared anywhere in the email, and two of three Shopee roles applied for together were
+# read as re-confirmations of the first, carried by the employer's name and their shared
+# "Spring 2027" intake. A looser title match fails the same way: "Product Management
+# Intern, Regional Logistics" contains every distinctive word of the generic "Product
+# Management Intern - Shopee". Erring strict costs a visible duplicate at worst; erring
+# loose silently loses an application.
+_SAME_ROLE = 0.8
+# Between equally good matches, prefer the application still waiting for its confirmation.
+_AWAITING_CONFIRMATION = (AppStatus.interested, AppStatus.applied)
 
-    Only says yes when a role was actually extracted — an unnamed role must never spawn a
+
+def _application_for_role(
+    session: Session, company: Company, msg: ParsedMessage, title: str
+) -> Optional[Application]:
+    """The tracked application whose role this confirmation names, or None if it is new.
+
+    Only called when a role was actually extracted: an unnamed role must never spawn a
     duplicate application for one already tracked.
     """
-    title = matchers.extract_role_title(msg.subject, msg.snippet, company.name)
-    if not title:
-        return False
-    jobs = session.exec(
-        select(Job)
-        .join(Application, Application.job_id == Job.id)
+    text = f"{msg.subject or ''} {msg.snippet or ''}"
+    best: Optional[Application] = None
+    best_key: tuple[float, bool] = (-1.0, False)
+    rows = session.exec(
+        select(Application, Job)
+        .join(Job, Job.id == Application.job_id)
         .where(Job.company_id == company.id)
     ).all()
-    text = f"{msg.subject or ''} {msg.snippet or ''}"
-    for job in jobs:
-        if matchers.title_match_score(job.title, text) >= _TITLE_CONFIDENCE:
-            return False
+    for app, job in rows:
         if matchers.ref_in_text(job.apply_url, text):
-            return False
-    return True
+            return app  # the posting's own id in the email is conclusive
+        score = matchers.role_similarity(job.title, title, company.name)
+        awaiting = app.status in _AWAITING_CONFIRMATION
+        if score >= _SAME_ROLE and (score, awaiting) > best_key:
+            best, best_key = app, (score, awaiting)
+    return best
 
 
 # Stages an incoming email is allowed to advance. An offer or a rejection is further along
@@ -482,7 +504,7 @@ def _application_for_company(
         job = session.get(Job, app.job_id)
         if job is None:
             continue
-        score = matchers.title_match_score(job.title, text)
+        score = matchers.title_match_score(job.title, text, company.name)
         if matchers.ref_in_text(job.apply_url, text):
             score += _REF_BONUS
         scored.append((score, app))

@@ -706,3 +706,76 @@ def test_a_recruiter_at_the_bare_domain_reaches_the_same_company(session):
     ))
     assert note is not None and note.type == "company_email"
     assert len(_apps(session)) == 1
+
+
+# --- several roles at one employer ------------------------------------------------------
+#
+# Real mail: three Shopee roles applied for within ten minutes. The first was tracked and
+# the other two were read as re-confirmations of it.
+
+NBSP = chr(160)
+OLD_SHOPEE = (f"Shopee -{NBSP}Technical Product Manager Intern, Marketplace Intelligence &"
+              " Data - Traffic (Jan-Apr 2026)")
+GENERIC_PM = "Product Management Intern - Shopee (Spring 2027)"
+ORDER_OPS = "Product Manager Intern, Order Operations (Spring 2027)"
+LOGISTICS = "Product Management Intern, Regional Logistics (Spring 2027)"
+
+
+def _shopee_confirmation(role, mid):
+    return ParsedMessage(
+        mid, "t1", "Shopee Careers <no-reply.hr@shopee.com>",
+        f"Thank you for applying to Shopee -{NBSP}{role}",
+        f"Dear Shi Kai Leong, Thank you for submitting your application to the {role} "
+        "position at Shopee. We appreciate your time and interest in pursuing a career",
+        None,
+    )
+
+
+def test_three_roles_applied_together_are_each_tracked(session):
+    _seed_named(session, "Shopee", "shopee", "shopee.com",
+                status=AppStatus.confirmed, title=OLD_SHOPEE)
+    notes = [process_message(session, _shopee_confirmation(role, mid))
+             for mid, role in (("63", GENERIC_PM), ("64", ORDER_OPS), ("65", LOGISTICS))]
+    assert all("New application tracked" in n.payload for n in notes)
+    assert len(_apps(session)) == 4                     # the older one plus three new
+
+
+def test_a_generic_posting_does_not_absorb_a_specific_one(session):
+    """Every distinctive word of the generic title is inside the Logistics one."""
+    _company, generic = _seed_named(session, "Shopee", "shopee", "shopee.com",
+                                    title=GENERIC_PM)
+    process_message(session, _shopee_confirmation(LOGISTICS, "65"))
+    session.refresh(generic)
+    assert generic.status == AppStatus.applied          # not confirmed by another role
+    assert len(_apps(session)) == 2
+
+
+def test_a_resent_confirmation_does_not_duplicate(session):
+    process_message(session, _shopee_confirmation(ORDER_OPS, "first"))
+    process_message(session, _shopee_confirmation(ORDER_OPS, "resend"))
+    assert len(_apps(session)) == 1
+
+
+def test_the_title_added_from_the_link_is_confirmed_not_duplicated(session):
+    """A link-added title matching the email's role confirms it, whatever the prefix."""
+    _company, app = _seed_named(session, "Shopee", "shopee", "shopee.com",
+                                title=ORDER_OPS)
+    process_message(session, _shopee_confirmation(ORDER_OPS, "64"))
+    session.refresh(app)
+    assert app.status == AppStatus.confirmed
+    assert len(_apps(session)) == 1
+
+
+def test_the_named_role_is_confirmed_not_the_most_recent(session):
+    company, order_ops = _seed_named(session, "Shopee", "shopee", "shopee.com",
+                                     title=ORDER_OPS)
+    logistics = _add_job(session, company, LOGISTICS)
+    logistics.last_stage_change_at = utcnow()
+    session.add(logistics)
+    session.commit()
+
+    process_message(session, _shopee_confirmation(ORDER_OPS, "64"))
+    session.refresh(order_ops)
+    session.refresh(logistics)
+    assert order_ops.status == AppStatus.confirmed
+    assert logistics.status == AppStatus.applied        # most recent, but not this role

@@ -320,13 +320,40 @@ def title_tokens(title: str) -> set[str]:
     }
 
 
-def title_match_score(title: str, text: str) -> float:
-    """Fraction of a title's distinctive words present in ``text`` (0.0 - 1.0)."""
-    tokens = title_tokens(title)
+def role_tokens(title: str, company: str = "") -> set[str]:
+    """A title's distinctive words, without the employer's own name.
+
+    Shopee writes itself into every title ("Shopee - Product Manager Intern, Order
+    Operations"), so its name matched between any two Shopee roles and made unrelated
+    ones look alike.
+    """
+    employer = set(_TOKEN_RE.findall((company or "").lower()))
+    return {t for t in title_tokens(title) if t not in employer}
+
+
+def title_match_score(title: str, text: str, company: str = "") -> float:
+    """Fraction of a title's distinctive words present in ``text`` (0.0 - 1.0).
+
+    Whole words only: a substring test counts "data" as present in "database".
+    """
+    tokens = role_tokens(title, company)
     if not tokens:
         return 0.0
-    lowered = (text or "").lower()
-    return sum(1 for t in tokens if t in lowered) / len(tokens)
+    words = set(_TOKEN_RE.findall((text or "").lower()))
+    return sum(1 for t in tokens if t in words) / len(tokens)
+
+
+def role_similarity(a: str, b: str, company: str = "") -> float:
+    """How far two role titles agree: shared distinctive words over all of them.
+
+    Symmetric on purpose. The old test asked how much of a tracked title appeared in the
+    email, so a new Shopee role sharing an older one's intake ("Spring 2027") scored as
+    the same role and was read as a re-confirmation instead of a new application.
+    """
+    ta, tb = role_tokens(a, company), role_tokens(b, company)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
 
 
 # --- pulling a role and employer out of a confirmation email ---------------------------

@@ -216,3 +216,28 @@ def test_registrable_domain():
     assert matchers.registrable_domain("apple.com") == "apple.com"
     assert matchers.registrable_domain("tech.gov.sg") == "tech.gov.sg"
     assert matchers.registrable_domain("careers.dbs.com.sg") == "dbs.com.sg"
+
+
+# --- comparing roles at one employer ----------------------------------------------------
+
+def test_the_employers_name_is_not_part_of_the_role():
+    assert matchers.role_tokens(
+        "Shopee - Product Manager Intern, Order Operations", "Shopee"
+    ) == {"product", "manager", "order", "operations"}
+
+
+def test_title_words_are_matched_whole():
+    """"data" must not count as present in "database"."""
+    assert matchers.title_match_score("Data Analyst", "Database Analyst role") == 0.5
+
+
+def test_a_generic_posting_is_not_the_same_role_as_a_specific_one():
+    """Real titles: every distinctive word of the first is inside the second."""
+    generic = "Shopee - Product Management Intern - Shopee (Spring 2027)"
+    specific = "Shopee - Product Management Intern, Regional Logistics (Spring 2027)"
+    assert matchers.role_similarity(generic, specific, "Shopee") < 0.8
+
+
+def test_role_similarity_is_symmetric():
+    a, b = "Software Engineer Intern (Spring 2027)", "Software Engineer Intern"
+    assert matchers.role_similarity(a, b) == matchers.role_similarity(b, a)
