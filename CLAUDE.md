@@ -109,9 +109,18 @@ rather than letting an exception escape into the 5-minute poll loop.
   removing that fallback would silently present an empty database rather than an error.
   Leave it in place.
 - `next build` OOMs on a 1 GB VM without swap; `deploy.sh` also caps the Node heap.
-- The service binds `0.0.0.0:8100`, not `127.0.0.1`, on purpose — the dashboard is reached
-  over Tailscale (VM joins the user's tailnet), not an SSH tunnel, and no GCP firewall rule
-  opens 8100 to the public internet. Don't "harden" this back to `127.0.0.1`; that would
-  just break Tailscale access.
+- **The dashboard is served through Tailscale Serve, and the port is not on the tailnet.**
+  The installed unit runs uvicorn with `--host 127.0.0.1`, and Serve fronts it on 443 at
+  the VM's MagicDNS name (`tailscale serve status` shows the URL). Reaching the VM's
+  tailnet IP on 8100 therefore fails, and that is not a fault. Note that
+  `deploy/appstracker.service` here says `--host 0.0.0.0`, but `deploy.sh` never copies it
+  to `/etc/systemd/system`, so that version has never run — don't change the running unit
+  to match the file, or the file to match the unit, without asking; both are reachable
+  setups and only one is deployed.
+- **A client address ending in `:0` in the logs is not a bug.**
+  `100.x.y.z:0 - "GET /applications"` is uvicorn reporting the address from Serve's
+  forwarded header rather than a socket peer. It proves a tailnet device reached the app,
+  even though the socket is bound to localhost. This was once misread as the dashboard
+  being unreachable, and the binding was nearly "fixed" as a result.
 - Never commit `token.json`, `credentials.json`, `.env`, or the `.sqlite` files — all are
   git-ignored.
