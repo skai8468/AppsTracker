@@ -19,6 +19,7 @@ Flow per poll:
 from __future__ import annotations
 
 import base64
+import html
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -91,7 +92,9 @@ def _parse_api_message(msg: dict[str, Any]) -> ParsedMessage:
         thread_id=msg.get("threadId", ""),
         from_addr=_header(headers, "From"),
         subject=_header(headers, "Subject"),
-        snippet=msg.get("snippet", ""),
+        # Gmail escapes the snippet as HTML ("P&amp;R", "Autodesk&#39;s"). Left escaped,
+        # "amp" and "39" turn up as words in role titles.
+        snippet=html.unescape(msg.get("snippet", "")),
         received_at=received,
         label_ids=msg.get("labelIds", []),
     )
@@ -175,6 +178,19 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
                     # The role decides, not recency: the most recently touched
                     # application at the employer is often a different role.
                     app = named
+            else:
+                # No role named. A confirmation belongs to an application still waiting
+                # for one; if none is, it is a new application. HP sent two identical
+                # confirmations minutes apart for two roles, neither naming its role,
+                # and the second re-confirmed the first instead of being recorded.
+                waiting = _unnamed_confirmation_target(session, company, msg)
+                if waiting is None:
+                    app = _create_application_from_email(
+                        session, company, msg, new_stage
+                    )
+                    created_from_email = True
+                else:
+                    app = waiting
 
     event = EmailEvent(
         gmail_message_id=msg.message_id,
@@ -354,8 +370,8 @@ def _application_for_role(
 ) -> Optional[Application]:
     """The tracked application whose role this confirmation names, or None if it is new.
 
-    Only called when a role was actually extracted: an unnamed role must never spawn a
-    duplicate application for one already tracked.
+    Only called when a role was actually extracted; ``_unnamed_confirmation_target``
+    decides for a confirmation that names none.
     """
     text = f"{msg.subject or ''} {msg.snippet or ''}"
     best: Optional[Application] = None
@@ -373,6 +389,30 @@ def _application_for_role(
         if score >= _SAME_ROLE and (score, awaiting) > best_key:
             best, best_key = app, (score, awaiting)
     return best
+
+
+def _unnamed_confirmation_target(
+    session: Session, company: Company, msg: ParsedMessage
+) -> Optional[Application]:
+    """The application a confirmation that names no role is for, or None if it is new.
+
+    Each application is confirmed once, so a confirmation goes to one still waiting for
+    it, most recently touched first. The posting's own id in the email wins outright.
+    """
+    text = f"{msg.subject or ''} {msg.snippet or ''}"
+    rows = session.exec(
+        select(Application, Job)
+        .join(Job, Job.id == Application.job_id)
+        .where(Job.company_id == company.id)
+        .order_by(Application.last_stage_change_at.desc())
+    ).all()
+    for app, job in rows:
+        if matchers.ref_in_text(job.apply_url, text):
+            return app
+    for app, _job in rows:
+        if app.status in _AWAITING_CONFIRMATION:
+            return app
+    return None
 
 
 # Stages an incoming email is allowed to advance. An offer or a rejection is further along

@@ -241,3 +241,40 @@ def test_a_generic_posting_is_not_the_same_role_as_a_specific_one():
 def test_role_similarity_is_symmetric():
     a, b = "Software Engineer Intern (Spring 2027)", "Software Engineer Intern"
     assert matchers.role_similarity(a, b) == matchers.role_similarity(b, a)
+
+
+# --- Keppel and HP (real mail) ----------------------------------------------------------
+
+KEPPEL_FROM = "Keppel Workday <KeppelHR@myworkday.com>"
+HP_FROM = "Workday HRHPI <hp@myworkday.com>"
+AI_PLATFORM = "[Keppel Internship Programme 2027] Intern, AI Platform (Jan - May 2027)"
+IT_PMO = ("[Keppel Internship Programme 2027] Intern, IT Project Management Office "
+          "(Jan - May 2027)")
+P_AND_R = "[Keppel Internship Programme 2027] Intern, P&R (Jan - May 2027)"
+
+
+def test_keppels_role_is_read_from_thank_you_for_considering():
+    snippet = (f"Dear Shi Kai , Thank you for considering {IT_PMO} with Keppel for your "
+               "next career opportunity. A recruiter will review")
+    assert matchers.extract_role_title("Thanks for Applying!", snippet, "Keppel") == IT_PMO
+
+
+def test_the_platforms_brand_is_dropped_from_the_display_name():
+    """"KeppelHR" is the mailbox; the display name, less "Workday", is the employer."""
+    assert matchers.company_from_sender(KEPPEL_FROM, "myworkday.com") == "Keppel"
+
+
+def test_hr_decoration_gives_way_to_the_mailbox_name():
+    """"Workday HRHPI" from hp@myworkday.com is HP."""
+    assert matchers.company_from_sender(HP_FROM, "myworkday.com") == "HP"
+
+
+def test_two_letter_role_words_count():
+    assert "pr" in matchers.role_tokens(P_AND_R, "Keppel")
+    assert "ai" in matchers.role_tokens(AI_PLATFORM, "Keppel")
+    assert matchers.role_similarity(P_AND_R, AI_PLATFORM, "Keppel") < 0.8
+
+
+def test_only_single_letters_join_across_an_ampersand():
+    tokens = matchers.title_tokens("Project & Change Management Office")
+    assert {"project", "change"} <= tokens

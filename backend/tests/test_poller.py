@@ -779,3 +779,71 @@ def test_the_named_role_is_confirmed_not_the_most_recent(session):
     session.refresh(logistics)
     assert order_ops.status == AppStatus.confirmed
     assert logistics.status == AppStatus.applied        # most recent, but not this role
+
+
+# --- Keppel: roles named only in the body -----------------------------------------------
+#
+# Real mail: three Keppel roles applied for within fifteen minutes, all attached to an
+# older Keppel application because no title pattern read "thank you for considering".
+
+K_AI_PLATFORM = "[Keppel Internship Programme 2027] Intern, AI Platform (Jan - May 2027)"
+K_ROLES = [
+    "[Keppel Internship Programme 2027] Intern, IT Project Management Office (Jan - May 2027)",
+    "[Keppel Internship Programme 2026] Intern, Project & Change Management Office "
+    "(May - Aug 2026)",
+    "[Keppel Internship Programme 2027] Intern, P&R (Jan - May 2027)",
+]
+
+
+def _keppel_confirmation(role, mid):
+    return ParsedMessage(
+        mid, "t1", "Keppel Workday <KeppelHR@myworkday.com>", "Thanks for Applying!",
+        f"Dear Shi Kai , Thank you for considering {role} with Keppel for your next "
+        "career opportunity. A recruiter will review your application and",
+        None,
+    )
+
+
+def test_three_keppel_roles_are_each_tracked(session):
+    _seed_named(session, "Keppel", "keppel", "keppel.com",
+                status=AppStatus.confirmed, title=K_AI_PLATFORM)
+    notes = [process_message(session, _keppel_confirmation(r, f"k{i}"))
+             for i, r in enumerate(K_ROLES)]
+    assert all("New application tracked" in n.payload for n in notes)
+    titles = sorted(session.get(Job, a.job_id).title for a in _apps(session))
+    assert titles == sorted([K_AI_PLATFORM] + K_ROLES)
+
+
+# --- HP: two confirmations, neither naming its role -------------------------------------
+
+def _hp_confirmation(mid):
+    return ParsedMessage(
+        mid, "t1", "Workday HRHPI <hp@myworkday.com>",
+        "Thank you - we've received your job application",
+        "Thank You For Applying! Dear Shi Kai, Thank you for your interest in HP. We "
+        "continuously seek talented individuals who aspire to make a significant impact",
+        None,
+    )
+
+
+def test_two_unnamed_confirmations_are_two_applications(session):
+    """Real mail: the second re-confirmed the first."""
+    from sqlmodel import select as _select
+    process_message(session, _hp_confirmation("hp1"))
+    note = process_message(session, _hp_confirmation("hp2"))
+    assert len(_apps(session)) == 2
+    assert [c.name for c in session.exec(_select(Company)).all()] == ["HP"]
+    assert note is not None and "New application tracked" in note.payload
+
+
+def test_an_unnamed_confirmation_goes_to_the_application_awaiting_it(session):
+    """Added from the link first: the confirmation is for it, not a new application."""
+    _company, app = _seed_named(session, "HP", "hp", "hp.com",
+                                title="College Intern - NPI System Interaction Engineer")
+    process_message(session, _hp_confirmation("hp1"))
+    session.refresh(app)
+    assert app.status == AppStatus.confirmed
+    assert len(_apps(session)) == 1
+
+    process_message(session, _hp_confirmation("hp2"))    # nothing left awaiting one
+    assert len(_apps(session)) == 2

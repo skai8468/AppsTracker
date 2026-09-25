@@ -220,3 +220,12 @@ def test_labels_are_read_off_the_api_message():
         _message("m", "Shi Kai <shikai@gmail.com>", "Re: hi", labels=["SENT", "INBOX"])
     )
     assert parsed.label_ids == {"SENT", "INBOX"}
+
+
+def test_the_snippet_is_unescaped():
+    """Gmail escapes snippets as HTML; "amp" must not become a word in a role title."""
+    raw = _message("m", "Keppel Workday <KeppelHR@myworkday.com>", "Thanks for Applying!")
+    raw["snippet"] = "Intern, P&amp;R (Jan - May 2027) with Keppel. Autodesk&#39;s HR"
+    assert poller._parse_api_message(raw).snippet == (
+        "Intern, P&R (Jan - May 2027) with Keppel. Autodesk's HR"
+    )

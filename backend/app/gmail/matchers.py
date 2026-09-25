@@ -305,6 +305,8 @@ _GENERIC_TOKENS = frozenset({
     "programme", "program", "graduate", "grad", "intern", "internship", "full", "time",
     "apply", "application", "applications", "opportunity", "career", "careers", "team",
     "singapore", "sgp", "asia", "pacific", "apac",
+    # Two-letter words now count (see title_tokens), so their filler has to be named.
+    "of", "in", "to", "at", "an", "or", "on", "by", "as", "is", "we", "be",
 })
 
 # A posting URL's id is usually 4+ digits ("higher.gs.com/roles/170769"); shorter runs are
@@ -312,11 +314,24 @@ _GENERIC_TOKENS = frozenset({
 _REF_RE = re.compile(r"\d{4,}")
 
 
+# "P&R", "R&D", "M&A": one role word written as two letters. Joined before tokenising,
+# because single letters are dropped. Only single letters join, so "Project & Change"
+# stays two words.
+_AMPERSAND_ACRONYM_RE = re.compile(r"\b([a-z])\s?&\s?([a-z])\b")
+
+
 def title_tokens(title: str) -> set[str]:
-    """Distinctive lowercase words from a role title."""
+    """Distinctive lowercase words from a role title.
+
+    Two-letter words count: "IT", "AI", "HR" and "UX" are often all that tells two
+    internships apart. Dropping them left Keppel's "Intern, P&R (Jan - May 2027)" with
+    only its intake dates to compare, a hair short of matching any other role in that
+    intake.
+    """
+    text = _AMPERSAND_ACRONYM_RE.sub(r"\1\2", (title or "").lower())
     return {
-        t for t in _TOKEN_RE.findall((title or "").lower())
-        if len(t) >= 3 and t not in _GENERIC_TOKENS
+        t for t in _TOKEN_RE.findall(text)
+        if len(t) >= 2 and t not in _GENERIC_TOKENS
     }
 
 
@@ -369,6 +384,8 @@ _TITLE_PATTERNS = (
     r"thank you for (?:your interest and )?applying (?:to|for)(?: the)?\s+(.+)",
     r"thanks for applying (?:to|for)(?: the)?\s+(.+)",
     r"we(?:'ve| have) received your application (?:to|for)(?: the)?\s+(.+)",
+    # Keppel: "Thank you for considering [Keppel Internship Programme 2027] Intern, ...".
+    r"thank you for considering(?: the)?\s+(.+)",
     # Apple: "We just received your resume for the following role: 2027 Apple ...".
     r"received your (?:resume|cv|application) for the following"
     r" (?:role|position|job)s?\s*:?\s*(.+)",
@@ -563,6 +580,24 @@ def _clean_sender_name(raw: str) -> str:
     return name if len(name) > 1 and not _EMAIL_RE.search(name) else ""
 
 
+def _tenant_name(from_header: str, domain: str) -> str:
+    """The mailbox name on a shared platform, as an employer name, or "" if none.
+
+    Only on shared platforms: at an employer's own domain the mailbox is a person or a
+    team ("jane@acme.com"), never the employer.
+    """
+    if not is_ats_domain(domain):
+        return ""
+    local = _LOCAL_PART_RE.search(from_header or "")
+    if not local:
+        return ""
+    name = _clean_sender_name(re.sub(r"[._+-]+", " ", local.group(1)))
+    if not (name and normalize_company_name(name)):
+        return ""
+    # "hp", "dbs": a short mailbox name is an acronym, and "Hp" reads as a typo.
+    return name.upper() if len(name) <= 3 else name.title()
+
+
 def company_from_sender(from_header: str, domain: str) -> str:
     """Employer name from the From header, falling back to the domain.
 
@@ -571,23 +606,30 @@ def company_from_sender(from_header: str, domain: str) -> str:
     the employer. Razer's confirmation came from ``razer@myworkday.com`` with no display
     name at all, and Autodesk's signed itself "AutoNotification workday"; both reduced to
     the platform, so Razer's was dropped and Autodesk's was filed under a company named
-    after the notification mailbox.
+    after the notification mailbox. HP's "Workday HRHPI <hp@myworkday.com>" was filed as
+    "Workday HRHPI": a name the platform signs itself can carry the tenant's HR
+    decoration, and there the mailbox name is the employer.
     """
+    tenant = _tenant_name(from_header, domain)
     m = _DISPLAY_NAME_RE.match(from_header or "")
     if m:
-        name = _clean_sender_name(m.group(1))
+        signed = _clean_sender_name(m.group(1))
+        # The platform's own brand is never part of the employer's name: "Keppel Workday".
+        name = " ".join(w for w in signed.split() if w.lower() not in _ATS_BRAND_TOKENS)
         # A display name that is only the platform's brand says nothing about who is
         # hiring, so the mailbox name gets a chance before the domain does.
         if name and normalize_company_name(name):
+            if tenant and name != signed:
+                # Signed by the platform. When the mailbox name sits inside what is left
+                # ("hp" in "HRHPI"), the rest is HR decoration and the mailbox is the
+                # employer; otherwise the display name is ("Keppel" over "KeppelHR").
+                shown = normalize_company_name(name)
+                box = normalize_company_name(tenant)
+                if box in shown and len(box) < len(shown):
+                    return tenant
             return name
-    if is_ats_domain(domain):
-        # Only on shared platforms: at an employer's own domain the mailbox is a
-        # person or a team ("jane@acme.com"), never the employer.
-        local = _LOCAL_PART_RE.search(from_header or "")
-        if local:
-            name = _clean_sender_name(re.sub(r"[._+-]+", " ", local.group(1)))
-            if name and normalize_company_name(name):
-                return name.title()
+    if tenant:
+        return tenant
     # "careers.tiktok.com" -> "Tiktok": drop the public suffix and any leading label.
     parts = [p for p in (domain or "").split(".") if p]
     if not parts:
