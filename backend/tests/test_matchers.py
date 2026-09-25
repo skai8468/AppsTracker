@@ -278,3 +278,24 @@ def test_two_letter_role_words_count():
 def test_only_single_letters_join_across_an_ampersand():
     tokens = matchers.title_tokens("Project & Change Management Office")
     assert {"project", "change"} <= tokens
+
+
+KEPPEL_URL = (
+    "https://keppel.wd3.myworkdayjobs.com/en-US/KeppelCareers/job/Singapore/XMLNAME--Keppel"
+    "-Internship-Programme-2027--Intern--AI-Platform--Jan---May-2027-_10016290?source=LinkedIn"
+)
+
+
+def test_a_year_in_a_job_link_is_not_a_posting_id():
+    assert matchers.url_ref_ids(KEPPEL_URL) == {"10016290"}
+    assert not matchers.ref_in_text(KEPPEL_URL, "Internship Programme 2027 (Jan - May 2027)")
+
+
+def test_the_real_posting_id_still_matches():
+    assert matchers.ref_in_text(KEPPEL_URL, "Requisition 10016290")
+
+
+def test_posting_ids_match_as_whole_numbers():
+    url = "https://hp.wd5.myworkdayjobs.com/job/College-Intern_UNI4548-1"
+    assert matchers.ref_in_text(url, "Job UNI4548")
+    assert not matchers.ref_in_text(url, "reference 145480")

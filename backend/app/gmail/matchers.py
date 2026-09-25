@@ -309,8 +309,9 @@ _GENERIC_TOKENS = frozenset({
     "of", "in", "to", "at", "an", "or", "on", "by", "as", "is", "we", "be",
 })
 
-# A posting URL's id is usually 4+ digits ("higher.gs.com/roles/170769"); shorter runs are
-# more often years or office numbers.
+# A posting URL's id is a run of four or more digits ("higher.gs.com/roles/170769",
+# Keppel's "..._10016290"); shorter runs are office numbers and the like. Four digits
+# also admits years, which url_ref_ids has to filter out itself.
 _REF_RE = re.compile(r"\d{4,}")
 
 
@@ -641,11 +642,24 @@ def company_from_sender(from_header: str, domain: str) -> str:
     return label.replace("-", " ").title()
 
 
+# A four-digit run that reads as a year is the intake, not an id. Keppel's job links carry
+# it in the slug ("...Programme-2027--Intern--AI-Platform--Jan---May-2027-_10016290"),
+# and every other 2027-intake Keppel confirmation "matched" that link's application
+# and was filed under it.
+_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+
+
 def url_ref_ids(url: str) -> set[str]:
-    return set(_REF_RE.findall(url or ""))
+    return {
+        ref for ref in _REF_RE.findall(url or "")
+        if not (len(ref) == 4 and _YEAR_RE.fullmatch(ref))
+    }
 
 
 def ref_in_text(url: str, text: str) -> bool:
-    """True if a requisition id from the posting URL appears in the email."""
-    lowered = (text or "").lower()
-    return any(ref in lowered for ref in url_ref_ids(url))
+    """True if a requisition id from the posting URL appears in the email.
+
+    Whole numbers only: as a substring, "4548" would be found inside "145480".
+    """
+    ids = url_ref_ids(url)
+    return bool(ids) and bool(ids & set(_REF_RE.findall(text or "")))

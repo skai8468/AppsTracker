@@ -847,3 +847,22 @@ def test_an_unnamed_confirmation_goes_to_the_application_awaiting_it(session):
 
     process_message(session, _hp_confirmation("hp2"))    # nothing left awaiting one
     assert len(_apps(session)) == 2
+
+
+def test_the_intake_year_in_a_job_link_is_not_a_posting_id(session):
+    """Real link: its slug carries "2027" twice, and every other 2027-intake Keppel
+    confirmation "matched" it as a posting id and was filed under this application."""
+    _company, ai = _seed_named(session, "Keppel", "keppel", "keppel.com",
+                               status=AppStatus.confirmed, title=K_AI_PLATFORM)
+    job = session.get(Job, ai.job_id)
+    job.apply_url = (
+        "https://keppel.wd3.myworkdayjobs.com/en-US/KeppelCareers/job/Singapore/XMLNAME"
+        "--Keppel-Internship-Programme-2027--Intern--AI-Platform--Jan---May-2027-_10016290"
+        "?source=LinkedIn"
+    )
+    session.add(job)
+    session.commit()
+
+    for i, role in enumerate(K_ROLES):
+        process_message(session, _keppel_confirmation(role, f"y{i}"))
+    assert len(_apps(session)) == 4
