@@ -299,3 +299,32 @@ def test_posting_ids_match_as_whole_numbers():
     url = "https://hp.wd5.myworkdayjobs.com/job/College-Intern_UNI4548-1"
     assert matchers.ref_in_text(url, "Job UNI4548")
     assert not matchers.ref_in_text(url, "reference 145480")
+
+
+# --- LinkedIn Easy Apply (real mail) ----------------------------------------------------
+
+def test_linkedin_names_the_employer_in_the_subject():
+    for employer in ("PhillipCapital", "QCP", "Binance", "GovTech Singapore"):
+        assert matchers.linkedin_application_employer(
+            "linkedin.com",
+            f"Leong, your application was sent to {employer}",
+            f"Your application was sent to {employer}",
+        ) == employer
+
+
+def test_linkedins_other_job_mail_names_no_application():
+    for subject in (
+        "Apple is hiring: Cross-Functional Quality Engineer",
+        "You may be a fit for Gradiant’s Quality Control Engineer role"
+        " - Actively recruiting",
+        "New jobs similar to [Uni – Jan till Jun 2027] Agentic AI Intern at NCS Group",
+        "Applied Materials South East Asia Optimization Planner (New College Graduate)",
+        "I want to connect",
+    ):
+        assert matchers.linkedin_application_employer("linkedin.com", subject, "") is None
+
+
+def test_only_linkedin_is_read_this_way():
+    assert matchers.linkedin_application_employer(
+        "example.com", "Your application was sent to Acme", ""
+    ) is None

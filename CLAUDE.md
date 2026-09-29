@@ -74,6 +74,14 @@ against `gmail.googleapis.com` directly — no MCP server, no connector, no thir
 - Mail the user writes (Gmail `SENT` / `DRAFT` labels) is skipped before any matching.
   Gmail's history feed reports it as added mail, so replies to a recruiter used to ping
   Telegram as mail from that company.
+- LinkedIn Easy Apply confirmations ("your application was sent to <employer>", from
+  linkedin.com) are handled before any sender matching, since LinkedIn is the sender. They
+  record an application at `applied` under the named employer, or join the one they pair
+  with: an application still awaiting confirmation, or one whose employer confirmation
+  arrived within 3 hours (`_PAIRING_WINDOW`). Pairing reads the application's own email
+  times, not its applied date, which users edit by hand. The role is only in the body,
+  which is never fetched, so it stays "Role not specified" until an employer
+  confirmation names it.
 
 **The token file is fragile and load-bearing.** Several past bugs came from corrupting it.
 `_write_token` writes to a temp file and `os.replace`s it, because a truncating write that

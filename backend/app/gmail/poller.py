@@ -12,6 +12,8 @@ Flow per poll:
         these mails usually restate the confirmation wording as well.
       - matches any tracked company                                   -> store an
         EmailEvent and queue a "company_email" notification for you to classify.
+      - a LinkedIn Easy Apply confirmation                            -> an application at
+        ``applied`` under the employer it names, or the one it is the other half of.
   * Queued notifications are pushed to Telegram (best-effort).
 
 ``GMAIL_DRY_RUN=true`` logs matches without changing state or sending notifications.
@@ -21,7 +23,7 @@ from __future__ import annotations
 import base64
 import html
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlmodel import Session, select
@@ -47,6 +49,9 @@ HISTORY_KEY = "gmail_history_id"
 
 # Labels Gmail puts on mail the user wrote rather than received.
 _OWN_MAIL_LABELS = frozenset({"SENT", "DRAFT"})
+
+# The title of an application whose role no email has named yet.
+_UNKNOWN_ROLE = "Role not specified"
 
 
 # --- parsed message shape (decoupled from the Gmail API payload) -----------------------
@@ -118,6 +123,12 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
     if not domain:
         return None
 
+    # LinkedIn sends Easy Apply confirmations itself, so the employer is in the wording,
+    # not the sender; matching by sender would file them under a company called LinkedIn.
+    employer = matchers.linkedin_application_employer(domain, msg.subject, msg.snippet)
+    if employer:
+        return _record_linkedin_application(session, msg, employer)
+
     is_confirmation = matchers.looks_like_confirmation(msg.subject, msg.snippet)
     is_noise = matchers.looks_like_noise(msg.subject, msg.snippet)
     invited_in_words = matchers.looks_like_interview(msg.subject, msg.snippet)
@@ -149,7 +160,9 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
             # Inventing an employer called "HireVue" is worse than leaving it untracked.
             log.info("unattributable platform mail: %s | %s", msg.from_addr, msg.subject)
             return None
-        created_from_email = True
+        # "Created" is left to the branches below, which set it when they add an
+        # application: this may be a company LinkedIn created, whose application the
+        # email only confirms.
 
     # Which application at this company is the email about?
     app = _application_for_company(session, company, msg)
@@ -178,6 +191,11 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
                     # The role decides, not recency: the most recently touched
                     # application at the employer is often a different role.
                     app = named
+                    job = session.get(Job, app.job_id)
+                    if job is not None and job.title == _UNKNOWN_ROLE:
+                        # LinkedIn's email never names the role; the employer's does.
+                        job.title = title
+                        session.add(job)
             else:
                 # No role named. A confirmation belongs to an application still waiting
                 # for one; if none is, it is a new application. HP sent two identical
@@ -214,7 +232,7 @@ def process_message(session: Session, msg: ParsedMessage) -> Optional[Notificati
         session.add(event)
         session.commit()
         job = session.get(Job, app.job_id)
-        role = job.title if job else "Role not specified"
+        role = job.title if job else _UNKNOWN_ROLE
         note = Notification(
             type="interview",
             payload=(
@@ -295,6 +313,19 @@ def _company_from_email(
     tracked_domain = "" if shared else matchers.registrable_domain(domain)
 
     existing = session.exec(select(Company).where(Company.slug == slug)).first()
+    if existing is None and tracked_domain:
+        # A company first tracked from a LinkedIn Easy Apply has no domain yet. This is
+        # the employer's own mail arriving, so claim that company rather than open a
+        # second one.
+        wanted = matchers.normalize_company_name(name)
+        existing = next(
+            (
+                c for c in session.exec(select(Company)).all()
+                if not c.email_domains and wanted
+                and matchers.normalize_company_name(c.name) == wanted
+            ),
+            None,
+        )
     if existing is not None:
         if tracked_domain and not existing.email_domains:
             existing.email_domains = tracked_domain
@@ -314,6 +345,7 @@ def _create_application_from_email(
     company: Company,
     msg: ParsedMessage,
     status: AppStatus = AppStatus.confirmed,
+    notes: Optional[str] = None,
 ) -> Application:
     """Record an application the email proves exists, at the stage the email proves.
 
@@ -325,7 +357,7 @@ def _create_application_from_email(
         source="email",
         source_job_id=msg.message_id,
         # Some confirmations never name the role; the user can fill it in from the app.
-        title=title or "Role not specified",
+        title=title or _UNKNOWN_ROLE,
         company_name=company.name,
         company_id=company.id,
         sector=company.sector,
@@ -339,7 +371,7 @@ def _create_application_from_email(
         job_id=job.id,
         status=status,
         applied_at=msg.received_at or utcnow(),
-        notes=(
+        notes=notes or (
             "Added automatically from an interview invitation."
             if status is AppStatus.interviewing
             else "Added automatically from a confirmation email."
@@ -374,8 +406,10 @@ def _application_for_role(
     decides for a confirmation that names none.
     """
     text = f"{msg.subject or ''} {msg.snippet or ''}"
+    when = _naive(msg.received_at or utcnow())
     best: Optional[Application] = None
     best_key: tuple[float, bool] = (-1.0, False)
+    unknown_role: Optional[Application] = None
     rows = session.exec(
         select(Application, Job)
         .join(Job, Job.id == Application.job_id)
@@ -388,7 +422,16 @@ def _application_for_role(
         awaiting = app.status in _AWAITING_CONFIRMATION
         if score >= _SAME_ROLE and (score, awaiting) > best_key:
             best, best_key = app, (score, awaiting)
-    return best
+        if (
+            unknown_role is None
+            and job.title == _UNKNOWN_ROLE
+            and awaiting
+            and _within_pairing_window(session, app, when)
+        ):
+            unknown_role = app
+    # An application known to exist but not which role (LinkedIn never says), sent just
+    # before this confirmation: it is this one, not a second application.
+    return best or unknown_role
 
 
 def _unnamed_confirmation_target(
@@ -415,6 +458,155 @@ def _unnamed_confirmation_target(
     return None
 
 
+# --- LinkedIn Easy Apply --------------------------------------------------------------
+
+# LinkedIn's "application sent" email and the employer's own confirmation of the same
+# application arrive together: GovTech's came a minute after LinkedIn's, twice. Within
+# this window they are two halves of one application, not two applications.
+_PAIRING_WINDOW = timedelta(hours=3)
+
+
+def _naive(dt: datetime) -> datetime:
+    """UTC without tzinfo. SQLite hands stored datetimes back naive, so the aware ones
+    parsed from Gmail have to be stripped before the two can be compared."""
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
+
+
+def _within_pairing_window(session: Session, app: Application, when: datetime) -> bool:
+    """True when one of the application's own emails, or its applied date, falls within
+    the pairing window of ``when``.
+
+    The emails come first because the applied date is often edited by hand: GovTech's
+    and QCP's read "04:00" on the right day, hours from the minute their confirmations
+    actually arrived.
+    """
+    stamps = list(
+        session.exec(
+            select(EmailEvent.received_at).where(
+                EmailEvent.matched_application_id == app.id
+            )
+        ).all()
+    )
+    stamps.append(app.applied_at)
+    return any(
+        s is not None and abs(when - _naive(s)) <= _PAIRING_WINDOW for s in stamps
+    )
+
+
+def _has_linkedin_email(session: Session, app_id: int) -> bool:
+    senders = session.exec(
+        select(EmailEvent.from_addr).where(EmailEvent.matched_application_id == app_id)
+    ).all()
+    return any(
+        (matchers.extract_domain(s) or "").endswith("linkedin.com") for s in senders
+    )
+
+
+def _company_named(session: Session, name: str) -> Optional[Company]:
+    """A tracked company by name alone: exact slug first, then the same employer spelled
+    differently ("GovTech Singapore" on LinkedIn, "GovTech" in its own mail)."""
+    companies = session.exec(select(Company)).all()
+    slug = slugify(name)
+    for company in companies:
+        if company.slug == slug:
+            return company
+    for company in companies:
+        if matchers.company_name_matches(company.name, name):
+            return company
+    return None
+
+
+def _linkedin_counterpart(
+    session: Session, company: Company, msg: ParsedMessage
+) -> Optional[Application]:
+    """The tracked application a LinkedIn "application sent" email is the other half of.
+
+    Either one still waiting for its confirmation (added from its job link), or one whose
+    employer confirmation arrived within the pairing window. The second case matters on a
+    rescan, which works newest first and so meets the employer's email before LinkedIn's.
+    An application that already has a LinkedIn email is a different application: two
+    Easy Applies at one employer are two applications.
+    """
+    when = _naive(msg.received_at or utcnow())
+    rows = session.exec(
+        select(Application)
+        .join(Job, Job.id == Application.job_id)
+        .where(Job.company_id == company.id)
+        .order_by(Application.last_stage_change_at.desc())
+    ).all()
+    for app in rows:
+        if _has_linkedin_email(session, app.id):
+            continue
+        if app.status in _AWAITING_CONFIRMATION or _within_pairing_window(
+            session, app, when
+        ):
+            return app
+    return None
+
+
+def _record_linkedin_application(
+    session: Session, msg: ParsedMessage, employer: str
+) -> Optional[Notification]:
+    """File a LinkedIn Easy Apply confirmation under the employer it names.
+
+    LinkedIn sent the application; the employer has not confirmed it yet. So a new one is
+    recorded as ``applied``, and that is also what lets the employer's own confirmation
+    find it waiting and confirm it, instead of adding a second application.
+    """
+    company = _company_named(session, employer)
+    app = _linkedin_counterpart(session, company, msg) if company else None
+    created = app is None
+    if created:
+        if not settings.auto_track_from_email:
+            return None
+        if company is None:
+            # linkedin.com is nobody's employer domain, so none is stored; adding the
+            # employer's own domain in the app lets its later mail match.
+            company = Company(name=employer, slug=slugify(employer), email_domains="")
+            session.add(company)
+            session.commit()
+            session.refresh(company)
+            log.info("tracking new company from LinkedIn: %s", employer)
+        app = _create_application_from_email(
+            session, company, msg, AppStatus.applied,
+            notes="Added automatically from a LinkedIn Easy Apply confirmation.",
+        )
+    elif app.status == AppStatus.interested:
+        app.status = AppStatus.applied
+        app.last_stage_change_at = utcnow()
+        session.add(app)
+
+    event = EmailEvent(
+        gmail_message_id=msg.message_id,
+        thread_id=msg.thread_id,
+        from_addr=msg.from_addr,
+        subject=msg.subject,
+        snippet=msg.snippet,
+        received_at=msg.received_at,
+        matched_company_id=company.id,
+        matched_application_id=app.id,
+        classified_stage=AppStatus.applied,
+        is_read=True,
+    )
+    session.add(event)
+    session.commit()
+    if not created:
+        return None  # already tracked; nothing new to report
+    job = session.get(Job, app.job_id)
+    note = Notification(
+        type="confirmation",
+        payload=(
+            f"🆕 Application sent via LinkedIn to {company.name}\n"
+            f"{job.title if job else _UNKNOWN_ROLE}"
+        ),
+        ref_email_event_id=event.id,
+    )
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return note
+
+
 # Stages an incoming email is allowed to advance. An offer or a rejection is further along
 # than anything the poller can infer, so a late assessment reminder must not walk it back.
 _ADVANCEABLE = (
@@ -436,16 +628,11 @@ def _company_behind_platform(
     was created from ("JPMorganChase" against a company tracked as "J.P. Morgan").
     """
     name = matchers.company_from_sender(msg.from_addr, domain)
-    companies = session.exec(select(Company)).all()
-
     if not matchers.is_ats_brand_name(name):
-        slug = slugify(name)
-        for company in companies:
-            if company.slug == slug:
-                return company
-        for company in companies:
-            if matchers.company_name_matches(company.name, name):
-                return company
+        found = _company_named(session, name)
+        if found is not None:
+            return found
+    companies = session.exec(select(Company)).all()
 
     # The header named the platform, not the employer; the employer is in the subject
     # instead. Prefer the longest name that appears, so a company tracked as "DBS" can't

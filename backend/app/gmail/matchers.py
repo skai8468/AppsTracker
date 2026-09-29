@@ -46,6 +46,9 @@ CONFIRMATION_PATTERNS = (
     # "We just received your resume for the following role: ...".
     "received your resume",
     "received your cv",
+    # LinkedIn Easy Apply. Listed here so the inbox rescan searches for it; the poller
+    # handles these before any sender matching (see linkedin_application_employer).
+    "your application was sent to",
 )
 
 # Transactional mail that arrives from a tracked company's domain but says nothing about
@@ -257,6 +260,32 @@ def domain_matches(sender_domain: str, company_domains: list[str]) -> bool:
         if sd == cd or sd.endswith("." + cd):
             return True
     return False
+
+
+# LinkedIn Easy Apply: "Leong, your application was sent to PhillipCapital". LinkedIn is
+# the sender, so the employer can only be read from this wording, and nothing else
+# LinkedIn sends uses it: job alerts, "X is hiring", "jobs similar to" and connection
+# requests all name employers and roles without an application having been made.
+_LINKEDIN_SENT_RE = re.compile(
+    r"your application was sent to\s+(.+?)[\s.!]*$", re.IGNORECASE
+)
+_LINKEDIN_DOMAINS = frozenset({"linkedin.com"})
+
+
+def linkedin_application_employer(
+    domain: str, subject: str, snippet: str
+) -> Optional[str]:
+    """The employer a LinkedIn "application sent" email names, or None for other mail.
+
+    The role is only in the body, which the poller does not fetch.
+    """
+    if not _domain_in(domain, _LINKEDIN_DOMAINS):
+        return None
+    for text in (subject or "", snippet or ""):
+        m = _LINKEDIN_SENT_RE.search(text.strip())
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return None
 
 
 def looks_like_confirmation(subject: str, snippet: str) -> bool:

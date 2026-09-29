@@ -866,3 +866,155 @@ def test_the_intake_year_in_a_job_link_is_not_a_posting_id(session):
     for i, role in enumerate(K_ROLES):
         process_message(session, _keppel_confirmation(role, f"y{i}"))
     assert len(_apps(session)) == 4
+
+
+# --- LinkedIn Easy Apply ----------------------------------------------------------------
+#
+# Real mail: LinkedIn is the sender and the subject names only the employer. GovTech's own
+# confirmation arrived a minute after LinkedIn's, twice.
+
+def _at(day, hour, minute):
+    from datetime import datetime, timezone
+    return datetime(2026, 9, day, hour, minute, tzinfo=timezone.utc)
+
+
+def _linkedin_sent(employer, mid, when):
+    return ParsedMessage(
+        mid, "t1", "LinkedIn <jobs-noreply@linkedin.com>",
+        f"Leong, your application was sent to {employer}",
+        f"Your application was sent to {employer}", when,
+    )
+
+
+def _govtech_confirmation(mid, when):
+    return ParsedMessage(
+        mid, "t2", "recruitment@tech.gov.sg", "Thank you for applying to GovTech", "",
+        when,
+    )
+
+
+def _track_govtech(session):
+    session.add(Company(name="GovTech", slug="govtech", email_domains="tech.gov.sg"))
+    session.commit()
+
+
+def test_a_linkedin_application_is_tracked_under_the_employer(session):
+    from sqlmodel import select as _select
+    note = process_message(
+        session, _linkedin_sent("PhillipCapital", "li1", _at(29, 13, 15))
+    )
+    company = session.exec(_select(Company)).one()
+    assert company.name == "PhillipCapital"
+    assert company.email_domains == ""            # linkedin.com is not PhillipCapital's
+    apps = _apps(session)
+    assert len(apps) == 1 and apps[0].status == AppStatus.applied
+    assert note is not None and "via LinkedIn" in note.payload
+
+
+def test_linkedins_other_job_mail_creates_nothing(session):
+    from sqlmodel import select as _select
+    for i, (sender, subject) in enumerate([
+        ("LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+         "Apple is hiring: Cross-Functional Quality Engineer"),
+        ("LinkedIn <jobs-noreply@linkedin.com>",
+         "New jobs similar to [Uni – Jan till Jun 2027] Agentic AI Intern"
+         " at NCS Group"),
+    ]):
+        note = process_message(session, _msg(subject, from_addr=sender, mid=f"n{i}"))
+        assert note is None
+    assert session.exec(_select(Company)).all() == []
+
+
+def test_the_employers_confirmation_confirms_the_linkedin_application(session):
+    """GovTech's own mail a minute after LinkedIn's is the same application."""
+    _track_govtech(session)
+    process_message(session, _linkedin_sent("GovTech Singapore", "li1", _at(5, 18, 7)))
+    note = process_message(session, _govtech_confirmation("gt1", _at(5, 18, 8)))
+    apps = _apps(session)
+    assert len(apps) == 1 and apps[0].status == AppStatus.confirmed
+    assert note is not None and "Application confirmed" in note.payload
+
+
+def test_linkedin_after_the_employers_confirmation_joins_it(session):
+    """A rescan works newest first, so it meets GovTech's mail before LinkedIn's."""
+    _track_govtech(session)
+    process_message(session, _govtech_confirmation("gt1", _at(5, 18, 8)))
+    note = process_message(
+        session, _linkedin_sent("GovTech Singapore", "li1", _at(5, 18, 7))
+    )
+    assert note is None                           # already tracked; nothing new
+    assert len(_apps(session)) == 1
+
+
+def test_two_linkedin_applications_at_one_employer_are_two(session):
+    process_message(session, _linkedin_sent("QCP", "q1", _at(18, 11, 35)))
+    process_message(session, _linkedin_sent("QCP", "q2", _at(18, 11, 50)))
+    assert len(_apps(session)) == 2
+
+
+def test_a_linkedin_application_joins_the_role_added_from_its_link(session):
+    _company, app = _seed_named(session, "Binance", "binance", "binance.com",
+                                title="Product Intern")
+    note = process_message(session, _linkedin_sent("Binance", "b1", _at(8, 16, 19)))
+    assert note is None
+    assert len(_apps(session)) == 1
+    session.refresh(app)
+    assert app.status == AppStatus.applied
+
+
+def test_the_employers_own_mail_claims_the_company_linkedin_created(session):
+    """The first application at a new employer went through LinkedIn, so its company
+    has no domain; the employer's confirmation must not open a second company."""
+    from sqlmodel import select as _select
+    process_message(session, _linkedin_sent("PhillipCapital", "li1", _at(29, 13, 15)))
+    note = process_message(session, ParsedMessage(
+        "e1", "t2", "PhillipCapital Careers <careers@phillip.com.sg>",
+        "Thank you for your application", "", _at(29, 13, 16),
+    ))
+    companies = session.exec(_select(Company)).all()
+    assert [c.name for c in companies] == ["PhillipCapital"]
+    assert companies[0].email_domains == "phillip.com.sg"
+    apps = _apps(session)
+    assert len(apps) == 1 and apps[0].status == AppStatus.confirmed
+    assert note is not None and "Application confirmed" in note.payload
+
+
+def test_a_named_confirmation_fills_in_the_linkedin_role(session):
+    process_message(session, _linkedin_sent("Acme", "li1", _at(20, 10, 0)))
+    process_message(session, ParsedMessage(
+        "e1", "t2", "Acme Careers <careers@acme.com>",
+        "Thank you for applying to Data Analyst, Growth", "", _at(20, 10, 2),
+    ))
+    apps = _apps(session)
+    assert len(apps) == 1 and apps[0].status == AppStatus.confirmed
+    assert session.get(Job, apps[0].job_id).title == "Data Analyst, Growth"
+
+
+def test_an_old_unknown_role_is_not_claimed_by_a_new_one(session):
+    """Outside the pairing window a named confirmation is a different application."""
+    process_message(session, _linkedin_sent("Acme", "li1", _at(15, 10, 0)))
+    process_message(session, ParsedMessage(
+        "e1", "t2", "Acme Careers <careers@acme.com>",
+        "Thank you for applying to Data Analyst, Growth", "", _at(20, 10, 0),
+    ))
+    assert len(_apps(session)) == 2
+
+
+def test_pairing_uses_the_emails_not_an_edited_applied_date(session):
+    """Real data: GovTech's applied dates were edited to "04:00" on the day, hours from
+    the minute its confirmation arrived. The confirmation's own time still pairs them."""
+    _track_govtech(session)
+    process_message(session, _govtech_confirmation("gt1", _at(5, 18, 8)))
+    app = _apps(session)[0]
+    app.applied_at = _at(5, 4, 0)
+    app.status = AppStatus.rejected                # where GovTech's actually stands now
+    session.add(app)
+    session.commit()
+
+    note = process_message(
+        session, _linkedin_sent("GovTech Singapore", "li1", _at(5, 18, 7))
+    )
+    assert note is None
+    assert len(_apps(session)) == 1
+    session.refresh(app)
+    assert app.status == AppStatus.rejected        # joining never moves a stage back
