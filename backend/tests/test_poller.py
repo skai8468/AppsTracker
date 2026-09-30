@@ -708,6 +708,27 @@ def test_a_recruiter_at_the_bare_domain_reaches_the_same_company(session):
     assert len(_apps(session)) == 1
 
 
+# --- CapitaLand -------------------------------------------------------------------------
+
+def test_capitalands_workday_confirmation_is_tracked(session):
+    """Real mail from the employer's own Workday mailbox, dropped for its wording."""
+    from sqlmodel import select as _select
+    note = process_message(session, ParsedMessage(
+        "capitaland1", "t1",
+        '"Workday (Do not reply)" <workdayadmin@capitaland.com>',
+        "Update on your Job Application with CapitaLand!",
+        "Hi Shi Kai , Thank you for your interest in exploring a career opportunity with "
+        "CapitaLand. Our recruitment team is processing your application and we will be "
+        "in touch with you on the next steps if you",
+        None,
+    ))
+    company = session.exec(_select(Company)).one()
+    assert company.email_domains == "capitaland.com"
+    apps = _apps(session)
+    assert len(apps) == 1 and apps[0].status == AppStatus.confirmed
+    assert note is not None and note.type == "confirmation"
+
+
 # --- several roles at one employer ------------------------------------------------------
 #
 # Real mail: three Shopee roles applied for within ten minutes. The first was tracked and

@@ -46,6 +46,9 @@ CONFIRMATION_PATTERNS = (
     # "We just received your resume for the following role: ...".
     "received your resume",
     "received your cv",
+    # CapitaLand's Workday: "Update on your Job Application with CapitaLand!", and only
+    # "Our recruitment team is processing your application" in the body.
+    "processing your application",
     # LinkedIn Easy Apply. Listed here so the inbox rescan searches for it; the poller
     # handles these before any sender matching (see linkedin_application_employer).
     "your application was sent to",
