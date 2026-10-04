@@ -1039,3 +1039,67 @@ def test_pairing_uses_the_emails_not_an_edited_applied_date(session):
     assert len(_apps(session)) == 1
     session.refresh(app)
     assert app.status == AppStatus.rejected        # joining never moves a stage back
+
+
+# --- DBS: three sender names, one employer ----------------------------------------------
+#
+# Real mail. DBS's Workday signs "DBS People Hub (do_not_reply)" and its screening chat
+# "DBS Careers on behalf of DBS Singapore Team"; each became a company of its own, so the
+# second role and the screening mail never reached the DBS that was tracked.
+
+def _dbs_with_one_role(session):
+    company = Company(name="DBS", slug="dbs", email_domains="", sector=Sector.finance)
+    session.add(company)
+    session.commit()
+    session.refresh(company)
+    job = Job(
+        source="email", source_job_id="dbs1", title=(
+            "2027 Management Associate Programme (Technology and AI & Data Science) - DBS"
+        ),
+        company_name="DBS", company_id=company.id, apply_url="",
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    app = Application(job_id=job.id, status=AppStatus.confirmed)
+    session.add(app)
+    session.commit()
+    session.refresh(app)
+    return company, app
+
+
+def test_dbs_workday_mail_reaches_the_tracked_dbs(session):
+    from sqlmodel import select as _select
+    company, _first = _dbs_with_one_role(session)
+    note = process_message(session, ParsedMessage(
+        "dbs2", "t1", '"DBS People Hub (do_not_reply)" <DBS@myworkday.com>',
+        "Application Received - 2027 Management Associate Programme (Business and Support "
+        "Units) - DBS",
+        "Dear Shi Kai , Thank you for your interest in DBS, we are pleased to confirm we "
+        "have received your application for the role of 2027 Management Associate "
+        "Programme (Business and Support Units) - WD87893",
+        None,
+    ))
+    assert [c.id for c in session.exec(_select(Company)).all()] == [company.id]
+    apps = _apps(session)
+    assert len(apps) == 2                          # the second role, at the same DBS
+    assert note is not None and note.type == "confirmation"
+
+
+def test_dbs_screening_chat_reaches_the_tracked_dbs(session):
+    from sqlmodel import select as _select
+    company, first = _dbs_with_one_role(session)
+    process_message(session, ParsedMessage(
+        "dbs3", "t1",
+        "DBS Careers on behalf of DBS Singapore Team <website@dbs.impress.ai>",
+        "Good work on completing your application for 2027 Management Associate "
+        "Programme (Technology and AI & Data Science) (Application ID: 200494)",
+        "Thank you for your application of 2027 Management Associate Programme "
+        "(Technology and AI & Data Science) Dear Shi Kai, Thank you for your interest in "
+        "DBS. We are pleased to confirm that we have",
+        None,
+    ))
+    companies = session.exec(_select(Company)).all()
+    assert [c.id for c in companies] == [company.id]
+    assert companies[0].email_domains == ""        # the platform's domain isn't DBS's
+    assert [a.id for a in _apps(session)] == [first.id]

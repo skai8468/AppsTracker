@@ -160,6 +160,9 @@ _APPLICANT_TRACKING_DOMAINS = frozenset({
     "symphonytalent.com", "successfactors.com", "successfactors.eu", "myworkday.com",
     "myworkdayjobs.com", "workday.com", "oracle.com", "oraclecloud.com", "ultipro.com",
     "silkroad.com", "applytojob.com", "hire.lever.co", "jobs.workable.com",
+    # DBS screens applicants through an impress.ai chat ("website@dbs.impress.ai"), and
+    # the tenant subdomain was stored as DBS's own domain under a second DBS company.
+    "impress.ai",
 })
 
 # Assessment and video-interview platforms mail on the employer's behalf too, so they are
@@ -447,7 +450,22 @@ _TITLE_TAIL_RE = re.compile(
 _REQ_CODE_PREFIX_RE = re.compile(r"^(?=\S*[A-Za-z])(?=\S*\d{4})[A-Za-z0-9-]+\s+")
 # Apple appends the posting number: "... Information Systems and Technology 200675982".
 # Six digits at least, so a title that ends in its intake year keeps it.
-_REQ_CODE_SUFFIX_RE = re.compile(r"\s+\d{6,}$")
+# Citi hyphenates it onto the intake: "Full-Time Analyst, Singapore, 2027-26978596".
+# DBS's screening chat brackets its own: "... (Business and Support Units) (Application
+# ID: 200610)".
+_REQ_CODE_SUFFIX_RE = re.compile(
+    r"(?:[\s-]+\d{6,}|\s*\((?:application|job|req(?:uisition)?)\s+id\b[^)]*\)?)$",
+    re.IGNORECASE,
+)
+# What the confirmation calls the thing applied for, caught by the patterns above along
+# with the title: "your application to the post of Technology intern" (Deutsche Bank),
+# "your application to the position Product Supply Management Intern" (P&G). Left on,
+# "post" and "position" are counted as role words and the title matches nothing.
+_TITLE_LEAD_RE = re.compile(
+    r"^(?:the\s+)?(?:(?:post|position|role|job|vacancy|opening)\s+of\b"
+    r"|(?:post|position|role|job)\s*:|position\b)\s*",
+    re.IGNORECASE,
+)
 _POSTING_STATUS_RE = re.compile(r"\s*\((?:open|closed|filled|evergreen)\)\s*$",
     re.IGNORECASE,
 )
@@ -457,11 +475,11 @@ _POSTING_STATUS_RE = re.compile(r"\s*\((?:open|closed|filled|evergreen)\)\s*$",
 # "EY Talent Attraction and Acquisition Team" has to reduce to "EY".
 _SENDER_NOISE_RE = re.compile(
     r"\b(?:recruit(?:ing|ment|er)?|careers?|talent|attraction|acquisition|hiring|hire"
-    r"|jobs?|human\s+resources|hr|people\s+team|campus|university\s+relations"
+    r"|jobs?|human\s+resources|hr|people\s+(?:team|hub)|campus|university\s+relations"
     r"|early\s+careers?|graduate\s+programme|no[\s-]?reply|do[\s-]?not[\s-]?reply|noreply"
     r"|auto[\s-]?notifications?|notifications?|team|via|support|mailer|info|admin"
     r"|onboarding|interviews?|assessments?|candidates?|applications?|system|hello"
-    r"|contact|alerts?|updates?|worldwide)\b",
+    r"|contact|alerts?|updates?|worldwide|website)\b",
     re.IGNORECASE,
 )
 
@@ -592,6 +610,7 @@ def extract_role_title(
             # ("Audit | New Analyst", "Services – Full-Time Analyst, Singapore").
             title = re.split(r"[.!?\n]", title)[0]
             title = _TITLE_TAIL_RE.sub("", title).strip(" ,;:-–—\"'!")
+            title = _TITLE_LEAD_RE.sub("", title)
             title = _REQ_CODE_PREFIX_RE.sub("", title)
             title = _REQ_CODE_SUFFIX_RE.sub("", _POSTING_STATUS_RE.sub("", title)).strip()
             if not (2 < len(title) <= 120):
@@ -607,10 +626,34 @@ _LOCAL_PART_RE = re.compile(r"([\w.+-]+)@")
 
 def _clean_sender_name(raw: str) -> str:
     """A sender name with the mailbox boilerplate removed, or "" if nothing is left."""
-    name = _SENDER_NOISE_RE.sub(" ", raw)
+    # "Deutsche_Bank_Workday-do-not-reply": an underscore is a word character to \b, so
+    # the name read as one word and neither the brand nor "do not reply" came off.
+    name = _SENDER_NOISE_RE.sub(" ", (raw or "").replace("_", " "))
     name = _DANGLING_RE.sub(" ", name)
+    # "DBS People Hub (do_not_reply)" leaves "()" behind.
+    name = re.sub(r"\(\s*\)|\[\s*\]", " ", name)
     name = re.sub(r"\s{2,}", " ", name).strip(" -|,·•&+")
     return name if len(name) > 1 and not _EMAIL_RE.search(name) else ""
+
+
+_ON_BEHALF_RE = re.compile(r"\s+on\s+behalf\s+of\s+", re.IGNORECASE)
+
+
+def _display_employer(display: str) -> str:
+    """The employer a display name signs for, with the mailbox boilerplate removed.
+
+    "DBS Careers on behalf of DBS Singapore Team" became a company of that whole name. The
+    employer is whoever the mail is sent on behalf of, unless the sender's own name opens
+    it: there the rest is a location or unit, and "DBS" is what DBS is tracked as.
+    """
+    parts = _ON_BEHALF_RE.split(display or "", maxsplit=1)
+    if len(parts) == 1:
+        return _clean_sender_name(display)
+    sender, principal = (_clean_sender_name(p) for p in parts)
+    sender_words = sender.lower().split()
+    if sender_words and principal.lower().split()[: len(sender_words)] == sender_words:
+        return sender
+    return principal or sender
 
 
 def _tenant_name(from_header: str, domain: str) -> str:
@@ -646,7 +689,7 @@ def company_from_sender(from_header: str, domain: str) -> str:
     tenant = _tenant_name(from_header, domain)
     m = _DISPLAY_NAME_RE.match(from_header or "")
     if m:
-        signed = _clean_sender_name(m.group(1))
+        signed = _display_employer(m.group(1))
         # The platform's own brand is never part of the employer's name: "Keppel Workday".
         name = " ".join(w for w in signed.split() if w.lower() not in _ATS_BRAND_TOKENS)
         # A display name that is only the platform's brand says nothing about who is

@@ -328,3 +328,63 @@ def test_only_linkedin_is_read_this_way():
     assert matchers.linkedin_application_employer(
         "example.com", "Your application was sent to Acme", ""
     ) is None
+
+
+# --- Workday tenants: real senders that were filed under the wrong name -----------------
+
+def test_underscored_sender_name_loses_the_platform_and_boilerplate():
+    """Filed as "Deutsche_Bank_Workday": underscores hid every word from the cleaning."""
+    assert matchers.company_from_sender(
+        "Deutsche_Bank_Workday-do-not-reply <db@myworkday.com>", "myworkday.com"
+    ) == "Deutsche Bank"
+
+
+def test_people_hub_and_bracketed_no_reply_are_boilerplate():
+    """Filed as a second company, "DBS People Hub (do_not_reply)"."""
+    assert matchers.company_from_sender(
+        '"DBS People Hub (do_not_reply)" <DBS@myworkday.com>', "myworkday.com"
+    ) == "DBS"
+
+
+def test_on_behalf_of_names_the_employer_once():
+    """Filed as a third company, "DBS on behalf of DBS Singapore", at dbs.impress.ai."""
+    sender = "DBS Careers on behalf of DBS Singapore Team <website@dbs.impress.ai>"
+    assert matchers.is_ats_domain("dbs.impress.ai")
+    assert matchers.company_from_sender(sender, "dbs.impress.ai") == "DBS"
+    assert matchers.company_from_sender(
+        "Careers on behalf of Acme <website@acme.impress.ai>", "acme.impress.ai"
+    ) == "Acme"
+
+
+def test_post_of_and_position_are_not_part_of_the_title():
+    assert matchers.extract_role_title(
+        "Your job application with Deutsche Bank",
+        "Dear Shi Kai Leong , Thank you for your application to the post of Technology "
+        "intern - YTP at Deutsche Bank. You may wish to sign into the Candidate Home",
+        "Deutsche Bank",
+    ) == "Technology intern - YTP"
+    assert matchers.extract_role_title(
+        "P&G Careers - Your Application",
+        "Shi Kai , We really appreciate your application to the position Product Supply "
+        "Management Intern (6 months) ! We will reach out to you shortly",
+        "P&G",
+    ) == "Product Supply Management Intern (6 months)"
+    assert matchers.extract_role_title(
+        "P&G Careers - Result of your Assessment",
+        "This is to inform you about the status of your application for the position: "
+        "Product Supply Management",
+        "P&G",
+    ) == "Product Supply Management"
+
+
+def test_trailing_application_ids_are_not_part_of_the_title():
+    assert matchers.extract_role_title(
+        "Good work on completing your application for 2027 Management Associate "
+        "Programme (Business and Support Units) (Application ID: 200610)", "", "DBS",
+    ) == "2027 Management Associate Programme (Business and Support Units)"
+    assert matchers.extract_role_title(
+        "Thank you for your interest in Citi!",
+        "Thank you for taking the time to apply for the role of Services - Full-Time "
+        "Analyst, Singapore, 2027-26978596. We look forward",
+        "Citi",
+    ) == "Services - Full-Time Analyst, Singapore, 2027"
